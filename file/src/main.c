@@ -37,7 +37,7 @@ bool initialized(void *args, screen *windows, game *gameData)
     gameData->captures[P1] = 0;
     gameData->captures[P2] = 0;
 
-    gameData->iaTurn = 1; // 0 = Pas d'IA, sinon 1 ou 2
+    gameData->iaTurn = 2; // 0 = Pas d'IA, sinon 1 ou 2
     gameData->turn = P1;  // P1 commence toujours
     gameData->game_over = false;
 
