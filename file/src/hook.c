@@ -123,29 +123,21 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
             {
                 // --- VÉRIFICATION RÈGLE DOUBLE-THREE (HUMAIN) ---
                 if (is_double_three(gameData, idx, gameData->turn)) {
-                    
-                    // On doit vérifier si ce coup capture, car la capture annule l'interdiction.
-                    // On simule le coup temporairement.
-                    gameData->board[idx] = gameData->turn;
-                    
+                    // On vérifie si c'est une capture (Exception à la règle)
                     int capture_indices[10];
                     int caps = apply_captures_for_ai(gameData, cell_x, cell_y, gameData->turn, capture_indices);
                     
-                    // IMPORTANT : On annule immédiatement les effets de la simulation (remettre les pions adverses)
-                    // pour laisser la logique normale du jeu (checkPieceCapture) faire son travail proprement après.
+                    // On annule la simulation de capture faite par apply_captures_for_ai (car on ne joue pas encore)
                     int opponent = (gameData->turn == P1) ? P2 : P1;
-                    for(int k=0; k<caps; k++) {
-                        gameData->board[capture_indices[k]] = opponent;
-                    }
-                    gameData->board[idx] = EMPTY; // On retire notre pion temporaire
+                    for(int k=0; k<caps; k++) gameData->board[capture_indices[k]] = opponent;
 
-                    // Si c'est un Double-Three ET qu'il ne capture rien -> INTERDIT
                     if (caps == 0) {
-                        printf(">>> COUP INTERDIT : Double-Three détecté sans capture !\n");
-                        explain_double_three(gameData, idx, gameData->turn);
-                        return; // ON SORT, LE COUP N'EST PAS JOUÉ
+                        printf("COUP INTERDIT : Double-Three !\n");
+                        explain_double_three(gameData, idx, gameData->turn); // Pour le debug
+                        return; // On sort, le coup n'est pas joué
                     }
                 }
+                // ----------------------------------------
 
                 // 1. Jouer le coup
                 gameData->board[idx] = gameData->turn;

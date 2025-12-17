@@ -139,6 +139,21 @@ typedef struct {
     int best_move;  // Le meilleur coup trouvé pour cette position
 } TTEntry;
 
+// --- STRUCTURES IA ---
+
+typedef struct {
+    int index;
+    int score_estim;
+} MoveCandidate;
+
+// --- GLOBALES IA (Déclarations extern) ---
+extern uint64_t zobrist_table[MAX_BOARD][3];
+extern TTEntry transposition_table[TT_SIZE];
+extern int killer_moves[MAX_DEPTH][2];
+extern int history_heuristic[MAX_BOARD];
+extern long long debug_node_count;
+extern long long debug_cutoff_count;
+
 // --- PROTOTYPES ---
 
 // graphicsUtils.c
@@ -179,14 +194,28 @@ void    checkVictoryCondition(game *gameData);
 int     evaluate_board(game *g, int player);
 int     get_point_score(game *g, int x, int y, int player);
 bool    is_double_three(game *g, int idx, int player);
+void    explain_double_three(game *g, int idx, int player);
 
 // ai.c
-void    init_zobrist();
 void    makeIaMove(game *gameData, screen *windows);
-void    apply_move(game *g, int idx, int player, MoveUndo *undo);
-void    undo_move(game *g, int player, MoveUndo *undo);
-int     quick_evaluate_move(game *g, int idx, int player);
-int     vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time);
-void    explain_double_three(game *g, int idx, int player);
+
+// ai_data.c
+void init_zobrist();
+void clear_heuristics();
+void tt_save(uint64_t key, int depth, int val, int flag, int best_move);
+TTEntry* tt_probe(uint64_t key);
+
+// ai_logic.c
+void apply_move(game *g, int idx, int player, MoveUndo *undo);
+void undo_move(game *g, int player, MoveUndo *undo);
+
+// ai_moves.c
+int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move);
+int quick_evaluate_move(game *g, int idx, int player);
+
+// ai_search.c
+int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
+int solve_vcf(game *g, int ia_player, clock_t start_time);
+int vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time);
 
 #endif
