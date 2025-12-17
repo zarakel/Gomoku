@@ -673,7 +673,7 @@ int solve_vcf(game *g, int ia_player, clock_t start_time) {
     int count_ia = generate_moves(g, moves, ia_player, 0, -1);
 
     // --- ÉTAPE 1 : VICTOIRE IMMÉDIATE (MAT EN 1) ---
-    // "XXX_X" ou "XXXX_" -> On gagne tout de suite.
+    // Priorité absolue : Si je peux gagner maintenant, je le fais, peu importe les menaces adverses.
     for (int i = 0; i < count_ia; i++) {
         int idx = moves[i].index;
         g->board[idx] = ia_player;
@@ -688,15 +688,19 @@ int solve_vcf(game *g, int ia_player, clock_t start_time) {
         }
     }
 
-    // --- ÉTAPE 2 : DÉFAITE IMMÉDIATE (MAT EN 1 ADVERSE) ---
-    // Si l'adversaire peut gagner tout de suite, on DOIT bloquer.
-    // On utilise les mêmes coups (cases vides), mais on évalue pour l'adversaire.
+    // --- ÉTAPE 2 : DÉFAITE IMMÉDIATE & ANALYSE DES MENACES ---
+    int max_opponent_threat = 0; // On va mémoriser la plus grosse menace adverse
+
     for (int i = 0; i < count_ia; i++) {
         int idx = moves[i].index;
         g->board[idx] = opponent;
         int score = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
         g->board[idx] = EMPTY;
 
+        // On garde la trace de la pire menace
+        if (score > max_opponent_threat) max_opponent_threat = score;
+
+        // Si Mat en 1 adverse, on bloque tout de suite
         if (score >= WIN_SCORE) {
             #ifdef DEBUG
             printf("[INSTANT BLOCK] Blocage de victoire immédiate en (%d, %d)\n", GET_X(idx), GET_Y(idx));
@@ -705,36 +709,44 @@ int solve_vcf(game *g, int ia_player, clock_t start_time) {
         }
     }
 
-    // --- ÉTAPE 3 : VCF OFFENSIF (Victoire Forcée en X coups) ---
-    // On cherche si on peut gagner en enchaînant les menaces.
-    for (int max_depth = 3; max_depth <= 17; max_depth += 2) {
-        // Check Time : On garde du temps pour le Minimax
-        if ((clock() - start_time) * 1000 / CLOCKS_PER_SEC > (TIME_LIMIT_MS / 2)) break; 
+    // --- ÉTAPE 3 : VCF OFFENSIF (Seulement si on n'est pas sous pression) ---
+    // CORRECTION ICI : Si l'adversaire a un Closed Three (Score ~80 000) ou un Open 3 (100 000),
+    // on NE TENTE PAS le diable. On saute l'attaque pour aller directement à la défense (Étape 4).
+    // Le seuil de 50 000 couvre les Closed Three et Broken Three dangereux.
+    
+    if (max_opponent_threat < 50000) { 
+        
+        for (int max_depth = 3; max_depth <= 17; max_depth += 2) {
+            if ((clock() - start_time) * 1000 / CLOCKS_PER_SEC > (TIME_LIMIT_MS / 2)) break; 
 
-        for (int i = 0; i < count_ia; i++) {
-            int idx = moves[i].index;
-            
-            // Pré-filtre : On ne teste que les coups d'attaque (Open 3, Broken 3, Open 4...)
-            g->board[idx] = ia_player;
-            int score = get_point_score(g, GET_X(idx), GET_Y(idx), ia_player);
-            g->board[idx] = EMPTY;
+            for (int i = 0; i < count_ia; i++) {
+                int idx = moves[i].index;
+                
+                g->board[idx] = ia_player;
+                int score = get_point_score(g, GET_X(idx), GET_Y(idx), ia_player);
+                g->board[idx] = EMPTY;
 
-            if (score < 5500) continue; 
+                if (score < 5500) continue; 
 
-            MoveUndo undo;
-            apply_move(g, idx, ia_player, &undo);
-            int win = vcf_search(g, max_depth, opponent, ia_player, start_time);
-            undo_move(g, ia_player, &undo);
+                MoveUndo undo;
+                apply_move(g, idx, ia_player, &undo);
+                int win = vcf_search(g, max_depth, opponent, ia_player, start_time);
+                undo_move(g, ia_player, &undo);
 
-            if (win) {
-                #ifdef DEBUG
-                // AFFICHAGE DE LA PROFONDEUR VCF
-                printf(">>> VCF OFFENSIF TROUVÉ ! Depth: %d | Coup: (%d, %d)\n", max_depth, GET_X(idx), GET_Y(idx));
-                #endif
-                return idx;
+                if (win) {
+                    #ifdef DEBUG
+                    printf(">>> VCF OFFENSIF TROUVÉ ! Depth: %d | Coup: (%d, %d)\n", max_depth, GET_X(idx), GET_Y(idx));
+                    #endif
+                    return idx;
+                }
             }
         }
+    } 
+    #ifdef DEBUG
+    else {
+        printf("[VCF] Attaque annulée car menace adverse trop forte (Score: %d)\n", max_opponent_threat);
     }
+    #endif
 
     // --- ÉTAPE 4 : VCF DÉFENSIF (L'adversaire a-t-il une victoire forcée ?) ---
     // Si je ne peux pas gagner, je vérifie si je vais perdre forcément.
@@ -750,24 +762,17 @@ int solve_vcf(game *g, int ia_player, clock_t start_time) {
         int score = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
         g->board[idx] = EMPTY;
 
-        // Si l'adversaire a un coup menaçant (Open 3 ou mieux)
         if (score >= 5500) {
-            
-            // On vérifie si ce coup déclenche une victoire forcée pour lui
             MoveUndo undo;
             apply_move(g, idx, opponent, &undo);
-            
-            // On cherche une victoire pour LUI (opponent)
-            // Profondeur limitée à 9 pour la rapidité défensive
             int opponent_wins = vcf_search(g, 9, ia_player, opponent, start_time);
-            
             undo_move(g, opponent, &undo);
 
             if (opponent_wins) {
                 #ifdef DEBUG
                 printf(">>> VCF DÉFENSIF : L'adversaire gagne en Depth 9 via (%d, %d). BLOCAGE.\n", GET_X(idx), GET_Y(idx));
                 #endif
-                return idx; // On joue sur sa case clé
+                return idx; 
             }
         }
     }
@@ -776,25 +781,27 @@ int solve_vcf(game *g, int ia_player, clock_t start_time) {
 }
 
 /* Fonction principale appelée par le main */
-void makeIaMove(game *gameData, int ia_player) {
+void makeIaMove(game *gameData, screen *windows) {
     clock_t start = clock();
+    int ia_player = gameData->turn; // On récupère le joueur courant
+    int best_move_idx = -1;         // Variable locale essentielle
     
     // 1. VCF / VICTOIRE IMMÉDIATE
     int vcf_move = solve_vcf(gameData, ia_player, start);
     if (vcf_move != -1) {
-        gameData->board[vcf_move] = ia_player;
-        gameData->last_move_idx = vcf_move;
+        best_move_idx = vcf_move;
         
         // On loggue clairement que c'était un coup spécial
         printf(">>> IA joue le coup VCF/WIN en (%d, %d) [Temps: %.3fs]\n", 
                GET_X(vcf_move), GET_Y(vcf_move), 
                (double)(clock() - start) / CLOCKS_PER_SEC);
-        return; // ON SORT ICI, on n'affiche pas les stats Minimax
+        
+        // On saute directement à l'application du coup pour gérer l'affichage et les captures
+        goto play_move; 
     }
 
     // 2. MINIMAX (Si pas de victoire immédiate)
     // --- ITERATIVE DEEPENING AVEC ASPIRATION WINDOWS ---
-    // On stocke le score de la profondeur précédente pour prédire le futur
     int prev_score = 0; 
 
     for (int depth = 2; depth <= MAX_DEPTH; depth += 2) {
@@ -802,29 +809,25 @@ void makeIaMove(game *gameData, int ia_player) {
         // Préparation de la fenêtre d'aspiration
         int alpha_start = INT_MIN;
         int beta_start = INT_MAX;
-        int window = 500; // Largeur de la fenêtre (à ajuster, 500 est standard pour Gomoku)
+        int window = 500; 
 
-        // À partir de profondeur 4, on tente de deviner le score
         if (depth > 2) {
             alpha_start = prev_score - window;
             beta_start = prev_score + window;
         }
 
-        // Boucle de "Retry" : Si la fenêtre échoue, on recommence avec l'infini
-        // false au départ, true tant qu'on doit chercher
         bool need_research = true; 
         
-        // Sauvegarde des coups pour ne pas regénérer en cas de retry
         MoveCandidate moves[MAX_BOARD];
-        int previous_best_move = best_move_idx;
+        // On utilise la variable locale best_move_idx
+        int previous_best_move = best_move_idx; 
         int count = generate_moves(gameData, moves, ia_player, depth, previous_best_move);
 
-        // Fallback premier coup
+        // Fallback premier coup si rien n'est trouvé
         if (best_move_idx == -1 && count > 0) best_move_idx = moves[0].index;
-        if (count == 0) return;
+        if (count == 0) goto end_search; // Plus de coups possibles
 
         while (need_research) {
-            // Par défaut, on suppose qu'on réussira du premier coup, on ne recommencera pas
             need_research = false; 
 
             int alpha = alpha_start;
@@ -841,7 +844,6 @@ void makeIaMove(game *gameData, int ia_player) {
 
                 apply_move(&working_game, idx, ia_player, &undo);
                 
-                // Appel PVS (qui utilise alpha/beta)
                 int val = minimax(&working_game, depth - 1, alpha, beta, false, ia_player, start);
                 
                 undo_move(&working_game, ia_player, &undo);
@@ -856,7 +858,6 @@ void makeIaMove(game *gameData, int ia_player) {
                     current_best_idx = idx;
                 }
                 
-                // Mise à jour dynamique d'alpha (classique)
                 if (val > alpha) alpha = val;
             }
 
@@ -865,11 +866,10 @@ void makeIaMove(game *gameData, int ia_player) {
                 #ifdef DEBUG
                     printf("Timeout at depth %d. Keeping best move from depth %d.\n", depth, depth-2);
                 #endif
-                goto end_search; // On sort de tout
+                goto end_search; 
             }
 
-            // --- GESTION ASPIRATION FAILURE (Le cœur du système) ---
-            // Si le score est hors de la fenêtre, notre prédiction était mauvaise.
+            // --- GESTION ASPIRATION FAILURE ---
             if (depth > 2 && (current_best_score <= alpha_start || current_best_score >= beta_start)) {
                 #ifdef DEBUG
                     printf("Aspiration Fail at depth %d (Score %d outside [%d, %d]). Re-searching full window.\n", 
@@ -879,7 +879,6 @@ void makeIaMove(game *gameData, int ia_player) {
                     need_research = false; 
                 } 
                 else {
-                    // On élargit la fenêtre pour la prochaine tentative
                     alpha_start = INT_MIN;
                     beta_start = INT_MAX;
                     need_research = true; 
@@ -887,20 +886,17 @@ void makeIaMove(game *gameData, int ia_player) {
                 }
             }
 
-            // --- MODIFICATION 1 : EARLY EXIT (Arrêt sur Victoire) ---
-            // Si on a trouvé une victoire forcée, on arrête TOUT DE SUITE.
-            // Pas besoin d'aller à Depth 10 si on gagne à Depth 4.
+            // --- EARLY EXIT (Victoire) ---
             if (current_best_score > WIN_SCORE - 5000) {
                 #ifdef DEBUG
                 printf("Winning move found at depth %d. Stopping search.\n", depth);
                 #endif
                 best_move_idx = current_best_idx;
-                goto play_move; // On saute directement au jeu
+                goto play_move; 
             }
             
-            // Si on arrive ici, le score est valide ou on a fini le re-search
             best_move_idx = current_best_idx;
-            prev_score = current_best_score; // On mémorise pour la prochaine profondeur
+            prev_score = current_best_score; 
 
             #ifdef DEBUG
                 printf("Depth %d complete. Best: %d. Nodes: %lld, Cutoffs: %lld.\n", 
@@ -908,7 +904,7 @@ void makeIaMove(game *gameData, int ia_player) {
             #endif
             
             if (current_best_score > WIN_SCORE / 2) goto end_search;
-        } // Fin while(retry)
+        } 
 
         // Check Time
         if ((clock() - start) * 1000 / CLOCKS_PER_SEC > TIME_LIMIT_MS) break;
@@ -921,11 +917,14 @@ play_move:
         int x = GET_X(best_move_idx);
         int y = GET_Y(best_move_idx);
         
+        // Application réelle du coup sur le jeu
         MoveUndo final_undo;
         apply_move(gameData, best_move_idx, ia_player, &final_undo);
 
+        // Mise à jour graphique
         drawSquare(windows, x, y, ia_player);
         
+        // Gestion graphique des captures
         if (final_undo.captured_count > 0) {
             for (int k = 0; k < final_undo.captured_count; k++) {
                 int cap_idx = final_undo.captured_indices[k];
