@@ -59,16 +59,19 @@
 #define GET_Y(index) ((index) / BOARD_SIZE)
 #define IS_VALID(x, y) ((x) >= 0 && (x) < BOARD_SIZE && (y) >= 0 && (y) < BOARD_SIZE)
 
-// --- POIDS DES SCORES ---
-// Ces valeurs déterminent la personnalité de l'IA.
-// Elles sont très espacées (puissances de 10) pour que Minimax priorise nettement.
-#define WIN_SCORE       100000000 // Victoire immédiate (5 alignés ou 10 captures)
-#define OPEN_FOUR       10000000  // 4 alignés ouverts des deux côtés (Victoire imparable au prochain tour sauf capture)
-#define CLOSED_FOUR     100000    // 4 alignés bloqués d'un côté (Force l'adversaire à bloquer)
-#define OPEN_THREE      100000    // 3 alignés ouverts (Crée une menace de OPEN_FOUR)
-#define CLOSED_THREE    1000      // 3 alignés bloqués
-#define OPEN_TWO        100       // 2 alignés ouverts
-#define CAPTURE_SCORE   100000    // Valeur d'une paire capturée (Très haute !)
+// --- POIDS DES SCORES (HIÉRARCHIE STRICTE) ---
+#define WIN_SCORE       100000000 // Victoire immédiate (5 alignés)
+#define OPEN_FOUR       20000000  // Victoire imparable au prochain tour (.XXXX.)
+#define CLOSED_FOUR     15000000  // Force le blocage immédiat (OXXXX.)
+#define OPEN_THREE      10000000  // Force le blocage immédiat (.XXX. ou .XX.X.)
+
+// --- LE FOSSÉ STRATÉGIQUE (AJUSTÉ) ---
+// CLOSED_THREE augmenté drastiquement (50k -> 3M)
+// Cela signifie : "Attention, danger imminent, ne pas ignorer sauf si tu as un Open 3 ou mieux".
+
+#define CLOSED_THREE    4000000   // Menace sérieuse (OXXX.)
+#define OPEN_TWO        5000      // Bon développement (.XX.)
+#define CLOSED_TWO      1000      // Développement faible (OXX.)
 
 // Vérifie si un pixel (x, y) est dans les limites de la fenêtre 'win'
 // On cast en (int) pour éviter les warnings de comparaison signé/non-signé

@@ -43,16 +43,28 @@ int vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time
 int solve_vcf(game *g, int ia_player, clock_t start_time) {
     int opponent = (ia_player == P1) ? P2 : P1;
     MoveCandidate moves[MAX_BOARD];
-    int count_ia = generate_moves(g, moves, ia_player, 0, -1);
+    // Scan complet (-1) pour ne rater aucune victoire immédiate
+    int count_ia = generate_moves(g, moves, ia_player, -1, -1);
 
     // 1. Victoire Immédiate (Mat en 1) - SEULE PRIORITÉ ABSOLUE ICI
     for (int i = 0; i < count_ia; i++) {
         int idx = moves[i].index;
         g->board[idx] = ia_player;
+        
+        // A. Victoire par Alignement
         if (get_point_score(g, GET_X(idx), GET_Y(idx), ia_player) >= WIN_SCORE) {
             g->board[idx] = EMPTY;
             return idx;
         }
+
+        // B. Victoire par Capture (CORRECTIF 1)
+        int cap_indices[10];
+        int caps = apply_captures_for_ai(g, GET_X(idx), GET_Y(idx), ia_player, cap_indices);
+        if (g->captures[ia_player] + (caps / 2) >= 5) {
+            g->board[idx] = EMPTY;
+            return idx; // GAGNE IMMÉDIATEMENT
+        }
+
         g->board[idx] = EMPTY;
     }
 
@@ -149,7 +161,8 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
     
     // On cherche d'abord si NOUS pouvons gagner immédiatement (Move Killer ultime)
     MoveCandidate win_moves[MAX_BOARD];
-    int win_count = generate_moves(g, win_moves, current_player, 0, -1);
+    // Scan complet (-1) pour nous aussi
+    int win_count = generate_moves(g, win_moves, current_player, -1, -1);
     for(int i=0; i<win_count; i++) {
         int idx = win_moves[i].index;
         g->board[idx] = current_player;
@@ -160,13 +173,23 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
             tt_save(g->current_hash, depth, WIN_SCORE - (MAX_DEPTH - depth), TT_EXACT, idx);
             return WIN_SCORE - (MAX_DEPTH - depth);
         }
+        // Check Capture Win pour nous aussi dans le minimax
+        int cap_indices[10];
+        int caps = apply_captures_for_ai(g, GET_X(idx), GET_Y(idx), current_player, cap_indices);
+        if (g->captures[current_player] + (caps / 2) >= 5) {
+             g->board[idx] = EMPTY;
+             tt_save(g->current_hash, depth, WIN_SCORE - (MAX_DEPTH - depth), TT_EXACT, idx);
+             return WIN_SCORE - (MAX_DEPTH - depth);
+        }
+
         g->board[idx] = EMPTY;
     }
 
     // Ensuite, on regarde si l'ADVERSAIRE menace de gagner au prochain tour
     // Si oui, on doit bloquer.
     MoveCandidate opp_moves[MAX_BOARD];
-    int opp_count = generate_moves(g, opp_moves, opponent, 0, -1);
+    // CORRECTIF 2 : depth = -1 pour désactiver le Beam Search et voir TOUTES les menaces
+    int opp_count = generate_moves(g, opp_moves, opponent, -1, -1);
     int must_block_indices[5]; // On peut avoir besoin de bloquer plusieurs endroits (ex: double 4)
     int must_block_count = 0;
 
@@ -174,9 +197,15 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
         int idx = opp_moves[i].index;
         g->board[idx] = opponent;
         int score = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
+        
+        // Check Capture Win pour l'adversaire
+        int cap_indices[10];
+        int caps = apply_captures_for_ai(g, GET_X(idx), GET_Y(idx), opponent, cap_indices);
+        bool capture_win = (g->captures[opponent] + (caps / 2) >= 5);
+
         g->board[idx] = EMPTY;
 
-        if (score >= WIN_SCORE) {
+        if (score >= WIN_SCORE || capture_win) {
             // L'adversaire gagne ici. On DOIT jouer ici pour bloquer (ou capturer, mais bloquer est le standard)
             must_block_indices[must_block_count++] = idx;
             if (must_block_count >= 5) break;

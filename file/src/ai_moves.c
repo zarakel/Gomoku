@@ -53,6 +53,10 @@ int quick_evaluate_move(game *g, int idx, int player) {
 
 int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move) {
     int count = 0;
+    // Gestion de la profondeur négative pour désactiver l'élagage
+    int effective_depth = (depth < 0) ? 0 : depth; 
+    bool disable_pruning = (depth < 0);
+
     int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
     bool empty_board = true;
 
@@ -87,8 +91,8 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
             int score = 0;
 
             if (i == tt_best_move) score = 2000000000; 
-            else if (i == killer_moves[depth][0]) score = 100000000;
-            else if (i == killer_moves[depth][1]) score = 90000000;
+            else if (i == killer_moves[effective_depth][0]) score = 100000000; // Utilisation de effective_depth
+            else if (i == killer_moves[effective_depth][1]) score = 90000000;  // Utilisation de effective_depth
             else {
                 int tactical = quick_evaluate_move(g, i, player);
                 if (tactical >= 1500000000) { // Must-Play Cutoff
@@ -105,7 +109,10 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
 
     qsort(moves, count, sizeof(MoveCandidate), compare_moves);
     
-    // Beam Search
+    // Si on a demandé de tout garder (depth -1), on renvoie tout
+    if (disable_pruning) return count;
+
+    // Beam Search Standard
     int final_count = 0;
     int beam_width = (depth >= 6) ? 8 : 12;
 
