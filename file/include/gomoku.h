@@ -44,8 +44,8 @@
 #define MAX_CAPTURES 10 // 5 paires = Victoire
 
 // Limites de temps et de profondeur
-#define MAX_DEPTH 10
-#define TIME_LIMIT_MS 498 // On garde une marge de sécurité (50ms) pour l'affichage
+#define MAX_DEPTH 30
+#define TIME_LIMIT_MS 450 // On garde une marge de sécurité (50ms) pour l'affichage
 
 // Valeurs des cases (Optimisé pour lecture rapide)
 #define EMPTY 0
@@ -68,7 +68,7 @@
 #define OPEN_THREE      100000    // 3 alignés ouverts (Crée une menace de OPEN_FOUR)
 #define CLOSED_THREE    1000      // 3 alignés bloqués
 #define OPEN_TWO        100       // 2 alignés ouverts
-#define CAPTURE_SCORE   200000    // Valeur d'une paire capturée (Très haute !)
+#define CAPTURE_SCORE   100000    // Valeur d'une paire capturée (Très haute !)
 
 // Vérifie si un pixel (x, y) est dans les limites de la fenêtre 'win'
 // On cast en (int) pour éviter les warnings de comparaison signé/non-signé
@@ -191,6 +191,7 @@ void    checkVictoryCondition(game *gameData);
 // heuristics.c 
 int     evaluate_board(game *g, int player);
 int     get_point_score(game *g, int x, int y, int player);
+bool    is_double_three(game *g, int idx, int player);
 
 // ai.c
 void    init_zobrist();
@@ -198,6 +199,7 @@ void    makeIaMove(game *gameData, screen *windows);
 void    apply_move(game *g, int idx, int player, MoveUndo *undo);
 void    undo_move(game *g, int player, MoveUndo *undo);
 int     quick_evaluate_move(game *g, int idx, int player);
-void    suggest_move(game *g, screen *s, int player);
+int     vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time);
+void    explain_double_three(game *g, int idx, int player);
 
 #endif
