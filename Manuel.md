@@ -1413,5 +1413,58 @@ makeIaMove()
     ├─► apply_move() définitif
     ├─► drawSquare() pour le coup
     ├─► drawSquare() pour les captures
-    └─► Affichage temps/coordonnées
+    └─► Affichage temps/coordonnées du coup, score
+    └─► Passage au joueur suivant ou détection de fin de partie
 ```
+
+À chaque tour, le moteur vérifie si la partie est terminée (alignement de 5, 5 paires capturées, ou plus de coups possibles). Si la partie continue, il relance la séquence complète pour le prochain joueur.
+
+---
+
+## 15. Analyse des Performances
+
+### 15.1 Mesures et Indicateurs
+
+Le moteur affiche en temps réel :
+
+- **Profondeur atteinte** (Depth N)
+- **Score du meilleur coup** (Best: X)
+- **Nombre de nœuds explorés** (Nodes)
+- **Nombre de coupures Alpha-Beta** (Cutoffs)
+- **Temps de calcul par coup** (en ms ou s)
+- **Aspiration Fail** (si la fenêtre était trop étroite)
+
+Exemple :
+```
+Depth 10 complete. Best: -370000. Nodes: 237, Cutoffs: 94.
+Aspiration Fail at depth 12 (Score -4190000 outside [-410500, -409500]). Re-searching full window.
+```
+
+### 15.2 Ordre de Grandeur
+
+- **Facteur de branchement** : 30 à 200 coups possibles selon la phase de jeu
+- **Nœuds explorés à Depth 10** : typiquement 10 000 à 100 000 (grâce à l'élagage)
+- **Profondeur maximale** : Depth 24 à 30 atteignable en fin de partie ou en situation forcée (VCF)
+- **Temps de calcul** : < 0.5s par coup (TIME_LIMIT_MS), early exit si victoire détectée
+
+### 15.3 Optimisations Clés
+
+- **Ordonnancement des coups** : Réduit drastiquement le nombre de nœuds explorés
+- **Transposition Table** : Évite de recalculer des positions identiques
+- **Late Move Reduction** : Survole les coups peu prometteurs
+- **VCF Solver** : Résout instantanément les menaces critiques sans explorer tout l’arbre
+- **Bounding Box** : Ne génère que les coups pertinents autour des pierres existantes
+
+### 15.4 Limites et Points d’Amélioration
+
+- **Explosion combinatoire** : Toujours présente dans les positions très ouvertes, mais fortement atténuée
+- **Gestion des captures** : L’IA doit continuellement équilibrer alignements et défense contre les captures
+- **Heuristique** : Peut être ajustée pour mieux prioriser certains patterns selon le style de jeu souhaité
+
+### 15.5 Résumé
+
+Le moteur combine des techniques avancées issues des moteurs d’échecs (PVS, LMR, TT, heuristiques dynamiques) adaptées aux spécificités du Gomoku (captures, double-three, patterns gappés). Il est capable de jouer à un niveau très compétitif tout en restant explicable et modulaire.
+
+---
+
+**Fin du manuel technique.**
