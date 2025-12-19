@@ -25,12 +25,46 @@ int quick_evaluate_move(game *g, int idx, int player) {
     // Évaluation défensive
     g->board[idx] = opponent;
     int defense_score = get_point_score(g, x, y, opponent);
+    int opp_captures = count_potential_captures(g, x, y, opponent);
     g->board[idx] = EMPTY;
 
     // Évaluation offensive
     g->board[idx] = player; 
     int attack_score = get_point_score(g, x, y, player);
+    int my_captures = count_potential_captures(g, x, y, player);
     g->board[idx] = EMPTY;
+
+    // --- CAPTURES : PRIORITÉ DYNAMIQUE BASÉE SUR L'ÉTAT ---
+    
+    // Victoire par capture (5 paires)
+    if (g->captures[player] + my_captures / 2 >= 5) {
+        return 2000000000; // Victoire !
+    }
+    
+    // Bloquer victoire par capture adverse
+    if (g->captures[opponent] + opp_captures / 2 >= 5) {
+        return 1950000000; // Blocage critique
+    }
+    
+    // (NOUVEAU) L'adversaire atteint 4 paires après ce coup = DANGER EXTRÊME
+    if (g->captures[opponent] + opp_captures / 2 >= 4) {
+        return 1940000000 + opp_captures * 10000;
+    }
+    
+    // Opportunité de capture (4 paires après ce coup)
+    if (g->captures[player] + my_captures / 2 >= 4) {
+        return 1930000000 + my_captures * 10000;
+    }
+    
+    // (NOUVEAU) L'adversaire a 2+ paires et peut en capturer = SÉRIEUX
+    if (g->captures[opponent] >= 2 && opp_captures >= 2) {
+        return 1910000000 + opp_captures * 10000;
+    }
+    
+    // Opportunité de capture (3 paires après ce coup)
+    if (g->captures[player] >= 2 && my_captures >= 2) {
+        return 1905000000 + my_captures * 10000;
+    }
 
     // --- HIÉRARCHIE ÉQUILIBRÉE (Attaque = Défense à niveau égal) ---
     
@@ -48,7 +82,7 @@ int quick_evaluate_move(game *g, int idx, int player) {
 
     // Niveau OPEN_THREE - ÉQUILIBRÉ (mais bonus si on fait les deux)
     if (attack_score >= OPEN_THREE && defense_score >= OPEN_THREE) {
-        return 1750000000; // Coup idéal : attaque ET défense
+        return 1750000000;
     }
     if (attack_score >= OPEN_THREE) return 1700000000;
     if (defense_score >= OPEN_THREE) return 1680000000;
@@ -57,8 +91,27 @@ int quick_evaluate_move(game *g, int idx, int player) {
     if (attack_score >= CLOSED_THREE) return 1600000000;
     if (defense_score >= CLOSED_THREE) return 1580000000;
 
+    // --- BONUS CAPTURES (AUGMENTÉS) ---
+    int capture_bonus = 0;
+    
+    // Bonus offensif pour captures
+    if (my_captures >= 2) {
+        capture_bonus += 600000 * (my_captures / 2);
+        // Bonus supplémentaire si on a déjà des captures
+        if (g->captures[player] >= 1) capture_bonus += 200000;
+        if (g->captures[player] >= 2) capture_bonus += 300000;
+    }
+    
+    // Bonus défensif pour bloquer captures
+    if (opp_captures >= 2) {
+        capture_bonus += 500000 * (opp_captures / 2);
+        // Bonus supplémentaire si l'adversaire a déjà des captures
+        if (g->captures[opponent] >= 1) capture_bonus += 150000;
+        if (g->captures[opponent] >= 2) capture_bonus += 250000;
+    }
+
     // Coups standards avec bonus offensif léger
-    int combined = attack_score + defense_score;
+    int combined = attack_score + defense_score + capture_bonus;
     
     // Bonus pour les coups polyvalents
     if (defense_score >= OPEN_TWO && attack_score >= OPEN_TWO) {

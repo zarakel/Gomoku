@@ -1,5 +1,168 @@
 #include "../include/gomoku.h"
 
+/*
+ * NOUVELLE FONCTION : Détecte les patterns gappés et retourne la case du trou
+ * Retourne l'index de la case critique à bloquer, ou -1 si pas de gap critique
+ */
+static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
+    // Construire un buffer de 9 cases centré sur (x,y)
+    int line[9];
+    int indices[9];
+    
+    for (int k = -4; k <= 4; k++) {
+        int nx = x + dx * k;
+        int ny = y + dy * k;
+        int buf_idx = k + 4;
+        
+        if (IS_VALID(nx, ny)) {
+            indices[buf_idx] = GET_INDEX(nx, ny);
+            line[buf_idx] = g->board[indices[buf_idx]];
+        } else {
+            indices[buf_idx] = -1;
+            line[buf_idx] = -1; // Hors plateau = bloqué
+        }
+    }
+    
+    // Chercher les patterns gappés de 4 pierres
+    // Pattern: X_XXX (trou en position 1)
+    for (int start = 0; start <= 4; start++) {
+        if (line[start] == player &&
+            line[start + 1] == EMPTY &&
+            line[start + 2] == player &&
+            line[start + 3] == player &&
+            line[start + 4] == player) {
+            return indices[start + 1]; // Le trou !
+        }
+    }
+    
+    // Pattern: XX_XX (trou au milieu)
+    for (int start = 0; start <= 4; start++) {
+        if (line[start] == player &&
+            line[start + 1] == player &&
+            line[start + 2] == EMPTY &&
+            line[start + 3] == player &&
+            line[start + 4] == player) {
+            return indices[start + 2]; // Le trou !
+        }
+    }
+    
+    // Pattern: XXX_X (trou en position 3)
+    for (int start = 0; start <= 4; start++) {
+        if (line[start] == player &&
+            line[start + 1] == player &&
+            line[start + 2] == player &&
+            line[start + 3] == EMPTY &&
+            line[start + 4] == player) {
+            return indices[start + 3]; // Le trou !
+        }
+    }
+    
+    return -1;
+}
+
+/*
+ * Fonction exportée : Trouve la case critique d'un gapped four pour un joueur
+ */
+int find_gapped_four_hole(game *g, int player) {
+    int dx[] = {1, 0, 1, 1};
+    int dy[] = {0, 1, 1, -1};
+    
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != player) continue;
+        
+        int x = GET_X(idx);
+        int y = GET_Y(idx);
+        
+        for (int d = 0; d < 4; d++) {
+            int hole = find_gap_in_line(g, x, y, dx[d], dy[d], player);
+            if (hole != -1) {
+                return hole;
+            }
+        }
+    }
+    return -1;
+}
+
+/*
+ * NOUVELLE FONCTION : Détecte les Gapped THREE (3 pierres + 1 trou + espaces libres aux bords)
+ * Patterns dangereux : .X_XX. ou .XX_X.
+ * Retourne l'index du trou, ou -1 si pas trouvé
+ */
+static int find_gapped_three_in_line(game *g, int x, int y, int dx, int dy, int player) {
+    int opponent = (player == P1) ? P2 : P1;
+    
+    // Construire un buffer de 7 cases centré sur (x,y)
+    int line[7];
+    int indices[7];
+    
+    for (int k = -3; k <= 3; k++) {
+        int nx = x + dx * k;
+        int ny = y + dy * k;
+        int buf_idx = k + 3;
+        
+        if (IS_VALID(nx, ny)) {
+            indices[buf_idx] = GET_INDEX(nx, ny);
+            line[buf_idx] = g->board[indices[buf_idx]];
+        } else {
+            indices[buf_idx] = -1;
+            line[buf_idx] = opponent; // Hors plateau = bloqué
+        }
+    }
+    
+    // Pattern: . X _ X X . (trou en position 2, fenêtre de 6)
+    // Positions: 0=empty, 1=player, 2=empty(hole), 3=player, 4=player, 5=empty
+    for (int start = 0; start <= 1; start++) {
+        if (start + 5 >= 7) continue;
+        if (line[start] == EMPTY &&
+            line[start + 1] == player &&
+            line[start + 2] == EMPTY &&
+            line[start + 3] == player &&
+            line[start + 4] == player &&
+            line[start + 5] == EMPTY) {
+            return indices[start + 2]; // Le trou !
+        }
+    }
+    
+    // Pattern: . X X _ X . (trou en position 3, fenêtre de 6)
+    for (int start = 0; start <= 1; start++) {
+        if (start + 5 >= 7) continue;
+        if (line[start] == EMPTY &&
+            line[start + 1] == player &&
+            line[start + 2] == player &&
+            line[start + 3] == EMPTY &&
+            line[start + 4] == player &&
+            line[start + 5] == EMPTY) {
+            return indices[start + 3]; // Le trou !
+        }
+    }
+    
+    return -1;
+}
+
+/*
+ * Fonction exportée : Trouve la case critique d'un gapped THREE pour un joueur
+ * C'est CRITIQUE car un gapped three non bloqué devient un gapped four !
+ */
+int find_gapped_three_hole(game *g, int player) {
+    int dx[] = {1, 0, 1, 1};
+    int dy[] = {0, 1, 1, -1};
+    
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != player) continue;
+        
+        int x = GET_X(idx);
+        int y = GET_Y(idx);
+        
+        for (int d = 0; d < 4; d++) {
+            int hole = find_gapped_three_in_line(g, x, y, dx[d], dy[d], player);
+            if (hole != -1) {
+                return hole;
+            }
+        }
+    }
+    return -1;
+}
+
 // Helper inline pour éviter la répétition de code
 static inline int evaluate_line(game *g, int x, int y, int dx, int dy, int player) {
     int score = 0;
@@ -42,134 +205,81 @@ static inline int evaluate_line(game *g, int x, int y, int dx, int dy, int playe
         else score = 100000; // Blocked 4 (Mort)
     }
     else if (len == 3) {
-        if (open_ends == 2) score = OPEN_THREE;     // 10M (CRITIQUE)
-        else if (open_ends == 1) score = CLOSED_THREE; // 3M (Sérieux)
+        if (open_ends == 2) score = OPEN_THREE;
+        else if (open_ends == 1) score = CLOSED_THREE;
     }
     else if (len == 2) {
         if (open_ends == 2) score = OPEN_TWO; 
         else if (open_ends == 1) score = CLOSED_TWO;
     }
 
-    // --- 4. DÉTECTION AVANCÉE DES TROUS ---
+    // --- 4. DÉTECTION AVANCÉE DES TROUS (GAPPED PATTERNS) ---
+    // CORRECTION MAJEURE : Détecter X_XXX, XX_XX, XXX_X comme WIN potentiel
     
-    if (len < 4) {
-        // --- Gap Positif ---
-        if (end_open) {
-             int px = x + dx * i; 
-             int py = y + dy * i;
-             
-             int extra_len = 0;
-             int start_k = 1;
-             bool double_gap = false;
-
-             // Vérification Double Gap (_ _)
-             int ppx1 = px + dx;
-             int ppy1 = py + dy;
-             if (IS_VALID(ppx1, ppy1) && g->board[ppy1*BOARD_SIZE+ppx1] == EMPTY) {
-                 double_gap = true;
-                 start_k = 2; 
-             }
-
-             int last_k = start_k;
-             for (int k = start_k; k <= 4; k++) {
-                 int ppx = px + dx * k;
-                 int ppy = py + dy * k;
-                 if (!IS_VALID(ppx, ppy) || g->board[ppy*BOARD_SIZE+ppx] != player) break;
-                 extra_len++;
-                 last_k = k;
-             }
-
-             if (extra_len > 0) {
-                 int virtual_len = len + extra_len;
-                 
-                 bool far_end_open = false;
-                 int far_x = px + dx * (last_k + 1);
-                 int far_y = py + dy * (last_k + 1);
-                 if (IS_VALID(far_x, far_y) && g->board[far_y*BOARD_SIZE+far_x] == EMPTY) {
-                     far_end_open = true;
-                 }
-
-                 if (double_gap) {
-                     if (virtual_len >= 4) score = CLOSED_FOUR; 
-                     else if (virtual_len == 3) {
-                         if (start_open && far_end_open) score = OPEN_THREE; 
-                         else score = CLOSED_THREE; 
-                     }
-                 } else {
-                     if (virtual_len >= 5) score = WIN_SCORE; 
-                     
-                     else if (virtual_len == 4) {
-                         // CORRECTION : Gapped Open 4 = OPEN_FOUR (pas WIN_SCORE)
-                         if (start_open && far_end_open) score = OPEN_FOUR; 
-                         else score = CLOSED_FOUR; 
-                     }
-                     
-                     else if (virtual_len == 3) {
-                         if (start_open && far_end_open) score = OPEN_THREE; 
-                         else score = CLOSED_THREE; 
-                     }
-                 }
-             }
+    if (len < 5 && (start_open || end_open)) {
+        // --- Gap Positif (après la séquence) ---
+        if (end_open && i < 5) {
+            int gap_x = x + dx * i; // Position du premier EMPTY trouvé
+            int gap_y = y + dy * i;
+            
+            // Compter les pierres APRÈS le trou
+            int extra_len = 0;
+            for (int k = 1; k <= 4; k++) {
+                int ppx = gap_x + dx * k;
+                int ppy = gap_y + dy * k;
+                if (!IS_VALID(ppx, ppy)) break;
+                if (g->board[GET_INDEX(ppx, ppy)] == player) extra_len++;
+                else break;
+            }
+            
+            int virtual_len = len + extra_len;
+            
+            // GAPPED FOUR = Victoire imminente (un seul coup pour gagner)
+            if (virtual_len >= 4) {
+                // C'est un Gapped Four ! Score très élevé
+                if (score < CLOSED_FOUR) score = CLOSED_FOUR;
+                // Si c'est exactement 4 avec le trou = WIN en un coup
+                if (virtual_len == 4) score = OPEN_FOUR; // Traiter comme Open Four (menace de victoire)
+            }
+            else if (virtual_len == 3) {
+                if (start_open) {
+                    if (score < OPEN_THREE) score = OPEN_THREE;
+                } else {
+                    if (score < CLOSED_THREE) score = CLOSED_THREE;
+                }
+            }
         }
 
-        // --- Gap Négatif ---
-        if (start_open) {
-             int mx = x - dx * j;
-             int my = y - dy * j;
-             
-             int extra_len = 0;
-             int start_k = 1;
-             bool double_gap = false;
-
-             int mmx1 = mx - dx;
-             int mmy1 = my - dy;
-             if (IS_VALID(mmx1, mmy1) && g->board[mmy1*BOARD_SIZE+mmx1] == EMPTY) {
-                 double_gap = true;
-                 start_k = 2;
-             }
-
-             int last_k = start_k;
-             for (int k = start_k; k <= 4; k++) {
-                 int mmx = mx - dx * k;
-                 int mmy = my - dy * k;
-                 if (!IS_VALID(mmx, mmy) || g->board[mmy*BOARD_SIZE+mmx] != player) break;
-                 extra_len++;
-                 last_k = k;
-             }
-
-             if (extra_len > 0) {
-                 int virtual_len = len + extra_len;
-                 
-                 bool far_end_open = false;
-                 int far_x = mx - dx * (last_k + 1);
-                 int far_y = my - dy * (last_k + 1);
-                 if (IS_VALID(far_x, far_y) && g->board[far_y*BOARD_SIZE+far_x] == EMPTY) {
-                     far_end_open = true;
-                 }
-
-                 if (double_gap) {
-                     if (virtual_len >= 4) score = CLOSED_FOUR;
-                     else if (virtual_len == 3) {
-                         if (end_open && far_end_open) score = OPEN_THREE;
-                         else score = CLOSED_THREE;
-                     }
-                 } else {
-                     if (virtual_len >= 5) score = WIN_SCORE;
-                     
-                     else if (virtual_len == 4) {
-                         // CORRECTION : Gapped Open 4 = OPEN_FOUR
-                         if (end_open && far_end_open) score = OPEN_FOUR;
-                         else score = CLOSED_FOUR; 
-                     }
-                     
-                     else if (virtual_len == 3) {
-                         if (end_open && far_end_open) score = OPEN_THREE; 
-                         else score = CLOSED_THREE;
-                     }
-                 }
-             }
+        // --- Gap Négatif (avant la séquence) ---
+        if (start_open && j < 5) {
+            int gap_x = x - dx * j;
+            int gap_y = y - dy * j;
+            
+            int extra_len = 0;
+            for (int k = 1; k <= 4; k++) {
+                int mmx = gap_x - dx * k;
+                int mmy = gap_y - dy * k;
+                if (!IS_VALID(mmx, mmy)) break;
+                if (g->board[GET_INDEX(mmx, mmy)] == player) extra_len++;
+                else break;
+            }
+            
+            int virtual_len = len + extra_len;
+            
+            if (virtual_len >= 4) {
+                if (score < CLOSED_FOUR) score = CLOSED_FOUR;
+                if (virtual_len == 4) score = OPEN_FOUR;
+            }
+            else if (virtual_len == 3) {
+                if (end_open) {
+                    if (score < OPEN_THREE) score = OPEN_THREE;
+                } else {
+                    if (score < CLOSED_THREE) score = CLOSED_THREE;
+                }
+            }
         }
     }
+    
     return score;
 }
 
@@ -259,26 +369,52 @@ int evaluate_board(game *g, int player) {
     long long final_score = (long long)my_score - (long long)opp_score;
     
     // 3. Panique Proportionnelle (simplifiée avec la nouvelle échelle)
-    // La menace adverse est multipliée par un facteur selon son niveau
     if (opp_max_threat >= OPEN_THREE) {
-        // Menace critique : je dois réagir sauf si j'ai mieux
         if (my_max_threat < CLOSED_FOUR) {
-            // Pénalité = menace * 3 (pour forcer la défense)
             final_score -= (long long)(opp_max_threat * 3);
         } else {
-            // Course de vitesse : pénalité standard
             final_score -= (long long)(opp_max_threat);
         }
     } else if (opp_max_threat >= CLOSED_THREE) {
-        // Menace sérieuse mais pas urgente
         final_score -= (long long)(opp_max_threat * 2);
     }
 
-    // 4. Captures (valent ~0.5 Open Three chacune)
+    // 4. Captures (valeur augmentée)
     final_score += (g->captures[player] * CAPTURE_BONUS); 
     final_score -= (g->captures[opponent] * CAPTURE_BONUS);
+    
+    // 5. (NOUVEAU) Pénalité pour paires vulnérables
+    int my_vulnerable = count_vulnerable_pairs(g, player);
+    int opp_vulnerable = count_vulnerable_pairs(g, opponent);
+    
+    // Chaque paire vulnérable est un risque, surtout si l'adversaire capture déjà
+    int vulnerability_penalty = my_vulnerable * 25000;
+    if (g->captures[opponent] >= 2) {
+        vulnerability_penalty *= 2; // Double pénalité si l'adversaire capture déjà
+    }
+    if (g->captures[opponent] >= 3) {
+        vulnerability_penalty *= 2; // Quadruple pénalité si proche de la victoire
+    }
+    final_score -= vulnerability_penalty;
+    
+    // Bonus pour paires adverses vulnérables (opportunité de capture)
+    int vulnerability_bonus = opp_vulnerable * 20000;
+    if (g->captures[player] >= 2) {
+        vulnerability_bonus *= 2;
+    }
+    final_score += vulnerability_bonus;
+    
+    // 6. (NOUVEAU) Bonus/Malus basé sur l'écart de captures
+    int capture_diff = g->captures[player] - g->captures[opponent];
+    if (capture_diff > 0) {
+        // On a l'avantage en captures
+        final_score += capture_diff * 30000;
+    } else if (capture_diff < 0) {
+        // L'adversaire a l'avantage en captures
+        final_score += capture_diff * 40000; // Pénalité plus forte
+    }
 
-    // 5. Clamp
+    // 7. Clamp
     if (final_score > WIN_SCORE - 1) final_score = WIN_SCORE - 1;
     if (final_score < -WIN_SCORE + 1) final_score = -WIN_SCORE + 1;
 

@@ -166,3 +166,104 @@ int count_potential_captures(game *g, int lx, int ly, int player) {
     }
     return capture_count;
 }
+
+/*
+ * NOUVELLE FONCTION : Compte les paires du joueur qui sont VULNÉRABLES à une capture
+ * Pattern vulnérable : . X X _ où _ est vide et . est l'adversaire qui peut capturer
+ * Retourne le nombre de paires vulnérables
+ */
+int count_vulnerable_pairs(game *g, int player) {
+    int opponent = (player == P1) ? P2 : P1;
+    int vulnerable_count = 0;
+    
+    const int dirs[4][2] = {
+        {1, 0}, {0, 1}, {1, 1}, {1, -1}
+    };
+    
+    for (int y = 0; y < BOARD_SIZE; y++) {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            int idx = GET_INDEX(x, y);
+            if (g->board[idx] != player) continue;
+            
+            for (int d = 0; d < 4; d++) {
+                int dx = dirs[d][0];
+                int dy = dirs[d][1];
+                
+                // Pattern: OPP - PLAYER - PLAYER - EMPTY (adversaire peut capturer)
+                int x_m1 = x - dx, y_m1 = y - dy;
+                int x_p1 = x + dx, y_p1 = y + dy;
+                int x_p2 = x + 2*dx, y_p2 = y + 2*dy;
+                
+                if (IS_VALID(x_m1, y_m1) && IS_VALID(x_p1, y_p1) && IS_VALID(x_p2, y_p2)) {
+                    int idx_m1 = GET_INDEX(x_m1, y_m1);
+                    int idx_p1 = GET_INDEX(x_p1, y_p1);
+                    int idx_p2 = GET_INDEX(x_p2, y_p2);
+                    
+                    // Pattern: OPP - ME - ME - EMPTY
+                    if (g->board[idx_m1] == opponent &&
+                        g->board[idx_p1] == player &&
+                        g->board[idx_p2] == EMPTY) {
+                        vulnerable_count++;
+                    }
+                }
+                
+                // Pattern inverse: EMPTY - PLAYER - PLAYER - OPP
+                int x_m2 = x - 2*dx, y_m2 = y - 2*dy;
+                
+                if (IS_VALID(x_m2, y_m2) && IS_VALID(x_m1, y_m1) && IS_VALID(x_p1, y_p1)) {
+                    int idx_m2 = GET_INDEX(x_m2, y_m2);
+                    int idx_m1 = GET_INDEX(x_m1, y_m1);
+                    int idx_p1 = GET_INDEX(x_p1, y_p1);
+                    
+                    if (g->board[idx_m2] == EMPTY &&
+                        g->board[idx_m1] == player &&
+                        g->board[idx_p1] == opponent) {
+                        vulnerable_count++;
+                    }
+                }
+            }
+        }
+    }
+    
+    return vulnerable_count / 2; // Chaque paire est comptée 2 fois (une fois par pierre)
+}
+
+/*
+ * NOUVELLE FONCTION : Trouve la case qui permet de capturer une paire adverse
+ * Retourne l'index de la case, ou -1 si pas de capture possible
+ */
+int find_capture_move(game *g, int player) {
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] != EMPTY) continue;
+        
+        int caps = count_potential_captures(g, GET_X(i), GET_Y(i), player);
+        if (caps >= 2) { // Au moins une paire
+            return i;
+        }
+    }
+    return -1;
+}
+
+/*
+ * NOUVELLE FONCTION : Trouve la case qui BLOQUE une capture imminente de nos paires
+ * L'adversaire pourrait capturer si on ne bloque pas
+ */
+int find_capture_block_move(game *g, int player) {
+    int opponent = (player == P1) ? P2 : P1;
+    
+    // Pour chaque case vide, vérifier si l'adversaire y jouerait pour capturer
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] != EMPTY) continue;
+        
+        // Simuler le coup adverse
+        g->board[i] = opponent;
+        int caps = count_potential_captures(g, GET_X(i), GET_Y(i), opponent);
+        g->board[i] = EMPTY;
+        
+        if (caps >= 2) { // L'adversaire capturerait au moins une paire
+            // Cette case est critique ! On doit soit la bloquer, soit protéger nos paires
+            return i;
+        }
+    }
+    return -1;
+}

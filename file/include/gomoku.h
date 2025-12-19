@@ -190,7 +190,10 @@ void    printInformation(screen *windows, game *gameData);
 void    checkPieceCapture(game *gameData, screen *windows, int lx, int ly);
 bool    in_bounds(int x, int y);
 int     apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_indices_buffer);
-int     count_potential_captures(game *g, int lx, int ly, int player);  // AJOUT
+int     count_potential_captures(game *g, int lx, int ly, int player);
+int     count_vulnerable_pairs(game *g, int player);      // NOUVEAU
+int     find_capture_move(game *g, int player);           // NOUVEAU
+int     find_capture_block_move(game *g, int player);     // NOUVEAU
 
 // victory.c
 void    checkVictoryCondition(game *gameData);
@@ -200,6 +203,8 @@ int     evaluate_board(game *g, int player);
 int     get_point_score(game *g, int x, int y, int player);
 bool    is_double_three(game *g, int idx, int player);
 void    explain_double_three(game *g, int idx, int player);
+int     find_gapped_four_hole(game *g, int player);
+int     find_gapped_three_hole(game *g, int player);  // NOUVEAU
 
 // ai.c
 void    makeIaMove(game *gameData, screen *windows);
