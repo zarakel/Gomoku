@@ -22,38 +22,57 @@ int quick_evaluate_move(game *g, int idx, int player) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
 
-    // 1. Défense (Ce que l'adversaire ferait ici)
+    // Évaluation défensive
     g->board[idx] = opponent;
     int defense_score = get_point_score(g, x, y, opponent);
     g->board[idx] = EMPTY;
 
-    // 2. Attaque (Ce que je fais ici)
+    // Évaluation offensive
     g->board[idx] = player; 
     int attack_score = get_point_score(g, x, y, player);
     g->board[idx] = EMPTY;
 
-    // --- PRIORITÉS ABSOLUES ---
-    if (attack_score >= WIN_SCORE) return 2000000000; // Je gagne
-    if (defense_score >= WIN_SCORE) return 1900000000; // Je bloque une victoire
-
-    if (attack_score >= OPEN_FOUR) return 1800000000; // Je crée un Open 4 (Win imparable)
-    if (defense_score >= OPEN_FOUR) return 1700000000; // Je bloque un Open 4
-
-    // --- COUPS DOUBLES (Attaque + Défense) ---
-    // C'est ici que se joue la stratégie. Un coup qui bloque un Open 3 ET crée un Open 3 est meilleur qu'un simple blocage.
+    // --- HIÉRARCHIE ÉQUILIBRÉE (Attaque = Défense à niveau égal) ---
     
-    int score = attack_score + defense_score;
+    // Niveau WIN (Victoire immédiate) - ATTAQUE PRIORITAIRE
+    if (attack_score >= WIN_SCORE) return 2000000000;
+    if (defense_score >= WIN_SCORE) return 1950000000;
 
+    // Niveau OPEN_FOUR - ATTAQUE PRIORITAIRE (victoire garantie)
+    if (attack_score >= OPEN_FOUR) return 1900000000;
+    if (defense_score >= OPEN_FOUR) return 1850000000;
+
+    // Niveau CLOSED_FOUR - ATTAQUE LÉGÈREMENT PRIORITAIRE (force la réponse)
+    if (attack_score >= CLOSED_FOUR) return 1800000000;
+    if (defense_score >= CLOSED_FOUR) return 1780000000;
+
+    // Niveau OPEN_THREE - ÉQUILIBRÉ (mais bonus si on fait les deux)
+    if (attack_score >= OPEN_THREE && defense_score >= OPEN_THREE) {
+        return 1750000000; // Coup idéal : attaque ET défense
+    }
+    if (attack_score >= OPEN_THREE) return 1700000000;
+    if (defense_score >= OPEN_THREE) return 1680000000;
+
+    // Niveau CLOSED_THREE
+    if (attack_score >= CLOSED_THREE) return 1600000000;
+    if (defense_score >= CLOSED_THREE) return 1580000000;
+
+    // Coups standards avec bonus offensif léger
+    int combined = attack_score + defense_score;
+    
     // Bonus pour les coups polyvalents
-    if (attack_score >= OPEN_THREE && defense_score >= OPEN_THREE) score += 500000;
-    if (attack_score >= CLOSED_FOUR && defense_score >= OPEN_THREE) score += 600000;
-
-    return score;
+    if (defense_score >= OPEN_TWO && attack_score >= OPEN_TWO) {
+        combined += 50000;
+    }
+    
+    // Bonus offensif léger pour encourager le développement
+    combined += (attack_score / 10);
+    
+    return combined;
 }
 
 int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move) {
     int count = 0;
-    // Gestion de la profondeur négative pour désactiver l'élagage
     int effective_depth = (depth < 0) ? 0 : depth; 
     bool disable_pruning = (depth < 0);
 
@@ -81,6 +100,27 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     min_y = (min_y - 2 < 0) ? 0 : min_y - 2;
     max_y = (max_y + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_y + 2;
 
+    // --- PREMIÈRE PASSE : Trouver le meilleur coup DÉFENSIF ---
+    int best_defensive_idx = -1;
+    int best_defensive_score = 0;
+
+    for (int y = min_y; y <= max_y; y++) {
+        for (int x = min_x; x <= max_x; x++) {
+            int i = GET_INDEX(x, y);
+            if (g->board[i] != EMPTY) continue;
+            if (!has_neighbors(g, i)) continue;
+
+            int tactical = quick_evaluate_move(g, i, player);
+            
+            // Coup défensif critique ? (>= 1800000000 = bloque CLOSED_FOUR ou mieux)
+            if (tactical >= 1800000000 && tactical > best_defensive_score) {
+                best_defensive_score = tactical;
+                best_defensive_idx = i;
+            }
+        }
+    }
+
+    // --- DEUXIÈME PASSE : Générer tous les coups ---
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
             int i = GET_INDEX(x, y);
@@ -90,35 +130,61 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
             moves[count].index = i;
             int score = 0;
 
-            if (i == tt_best_move) score = 2000000000; 
-            else if (i == killer_moves[effective_depth][0]) score = 100000000; // Utilisation de effective_depth
-            else if (i == killer_moves[effective_depth][1]) score = 90000000;  // Utilisation de effective_depth
+            if (i == tt_best_move) score = 2100000000; 
+            else if (i == killer_moves[effective_depth][0]) score = 100000000;
+            else if (i == killer_moves[effective_depth][1]) score = 90000000;
             else {
-                int tactical = quick_evaluate_move(g, i, player);
-                if (tactical >= 1500000000) { // Must-Play Cutoff
-                    moves[0].index = i;
-                    moves[0].score_estim = tactical;
-                    return 1;
-                }
-                score = tactical + history_heuristic[i];
+                score = quick_evaluate_move(g, i, player);
+                score += history_heuristic[i];
             }
             moves[count].score_estim = score;
             count++;
         }
     }
 
+    // --- CUTOFF INTELLIGENT ---
+    // Ne couper que si on a une victoire immédiate (WIN) ou si on doit bloquer une victoire adverse
+    if (best_defensive_score >= 1950000000) { // Bloque un WIN adverse
+        moves[0].index = best_defensive_idx;
+        moves[0].score_estim = best_defensive_score;
+        return 1;
+    }
+
     qsort(moves, count, sizeof(MoveCandidate), compare_moves);
     
-    // Si on a demandé de tout garder (depth -1), on renvoie tout
+    // Si le meilleur coup est une victoire (>= 2000000000), on ne garde que lui
+    if (count > 0 && moves[0].score_estim >= 2000000000) {
+        return 1;
+    }
+    
     if (disable_pruning) return count;
 
-    // Beam Search Standard
-    int final_count = 0;
-    int beam_width = (depth >= 6) ? 8 : 12;
-
-    for (int i = 0; i < count; i++) {
-        if (i < beam_width || moves[i].score_estim > 4000) final_count++;
-        else break;
+    // Beam Search Adaptatif - PLUS LARGE
+    int beam_width;
+    bool defensive_situation = (count > 0 && moves[0].score_estim >= 1700000000);
+    
+    if (defensive_situation) {
+        beam_width = 25;  // Était 16, augmenté pour ne pas rater de blocages
+    } else if (depth >= 8) {
+        beam_width = 10;
+    } else if (depth >= 6) {
+        beam_width = 15;
+    } else {
+        beam_width = 20;
     }
+
+    int final_count = 0;
+    for (int i = 0; i < count; i++) {
+        // Garder tous les coups tactiques (>= CLOSED_THREE défense/attaque)
+        if (i < beam_width || moves[i].score_estim >= 1550000000) {
+            final_count++;
+        } else {
+            break;
+        }
+    }
+    
+    // Garantir un minimum de coups
+    if (final_count < 5 && count >= 5) final_count = 5;
+    
     return final_count;
 }

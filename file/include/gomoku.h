@@ -59,19 +59,20 @@
 #define GET_Y(index) ((index) / BOARD_SIZE)
 #define IS_VALID(x, y) ((x) >= 0 && (x) < BOARD_SIZE && (y) >= 0 && (y) < BOARD_SIZE)
 
-// --- POIDS DES SCORES (HIÉRARCHIE STRICTE) ---
-#define WIN_SCORE       100000000 // Victoire immédiate (5 alignés)
-#define OPEN_FOUR       20000000  // Victoire imparable au prochain tour (.XXXX.)
-#define CLOSED_FOUR     15000000  // Force le blocage immédiat (OXXXX.)
-#define OPEN_THREE      10000000  // Force le blocage immédiat (.XXX. ou .XX.X.)
+// --- POIDS DES SCORES (HIÉRARCHIE LOGARITHMIQUE) ---
+// Chaque niveau est ~10x plus important que le précédent
 
-// --- LE FOSSÉ STRATÉGIQUE (AJUSTÉ) ---
-// CLOSED_THREE augmenté drastiquement (50k -> 3M)
-// Cela signifie : "Attention, danger imminent, ne pas ignorer sauf si tu as un Open 3 ou mieux".
+#define WIN_SCORE       1000000000  // 10^9 - Victoire absolue
+#define OPEN_FOUR       100000000   // 10^8 - Victoire au prochain tour
+#define CLOSED_FOUR     10000000    // 10^7 - Force le blocage immédiat
+#define OPEN_THREE      1000000     // 10^6 - Menace critique
+#define CLOSED_THREE    100000      // 10^5 - Menace sérieuse
+#define OPEN_TWO        10000       // 10^4 - Bon développement
+#define CLOSED_TWO      1000        // 10^3 - Développement faible
 
-#define CLOSED_THREE    4000000   // Menace sérieuse (OXXX.)
-#define OPEN_TWO        5000      // Bon développement (.XX.)
-#define CLOSED_TWO      1000      // Développement faible (OXX.)
+// Bonus/Malus
+#define CAPTURE_BONUS   50000       // Par paire capturée
+#define CENTER_BONUS    500         // Proximité du centre
 
 // Vérifie si un pixel (x, y) est dans les limites de la fenêtre 'win'
 // On cast en (int) pour éviter les warnings de comparaison signé/non-signé
@@ -189,6 +190,7 @@ void    printInformation(screen *windows, game *gameData);
 void    checkPieceCapture(game *gameData, screen *windows, int lx, int ly);
 bool    in_bounds(int x, int y);
 int     apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_indices_buffer);
+int     count_potential_captures(game *g, int lx, int ly, int player);  // AJOUT
 
 // victory.c
 void    checkVictoryCondition(game *gameData);

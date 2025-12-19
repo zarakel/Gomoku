@@ -131,3 +131,38 @@ int apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_ind
     }
     return total_removed;
 }
+
+// Version LECTURE SEULE pour l'IA : compte les captures possibles sans modifier le plateau
+int count_potential_captures(game *g, int lx, int ly, int player) {
+    int opponent = (player == P1) ? P2 : P1;
+    int capture_count = 0;
+    
+    const int dirs[8][2] = {
+        { 1, 0}, { 0, 1}, {-1, 0}, { 0,-1},
+        { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1}
+    };
+
+    for (int d = 0; d < 8; d++) {
+        int dx = dirs[d][0];
+        int dy = dirs[d][1];
+        
+        int x1 = lx + dx,     y1 = ly + dy;
+        int x2 = lx + 2 * dx, y2 = ly + 2 * dy;
+        int x3 = lx + 3 * dx, y3 = ly + 3 * dy;
+
+        if (!in_bounds(x3, y3)) continue;
+
+        int idx1 = GET_INDEX(x1, y1);
+        int idx2 = GET_INDEX(x2, y2);
+        int idx3 = GET_INDEX(x3, y3);
+
+        // Pattern: PLAYER - OPP - OPP - PLAYER
+        if (g->board[idx1] == opponent &&
+            g->board[idx2] == opponent &&
+            g->board[idx3] == player) 
+        {
+            capture_count += 2; // 2 pierres capturées
+        }
+    }
+    return capture_count;
+}

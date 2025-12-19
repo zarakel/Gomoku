@@ -251,135 +251,129 @@ int evaluate_board(game *g, int player) {
     int opp_max_threat = (player == P1) ? max_p2_threat : max_p1_threat;
     int my_max_threat = (player == P1) ? max_p1_threat : max_p2_threat;
 
-    // 1. Défaite absolue ?
+    // 1. Victoire/Défaite absolue
     if (opp_max_threat >= WIN_SCORE || g->captures[opponent] >= 5) return -WIN_SCORE; 
-
-    // 2. Victoire absolue ?
     if (my_max_threat >= WIN_SCORE || g->captures[player] >= 5) return WIN_SCORE;
 
-    // 3. Score Relatif
+    // 2. Score de base
     long long final_score = (long long)my_score - (long long)opp_score;
     
-    // --- PANIQUE PROPORTIONNELLE INTELLIGENTE ---
-    // CORRECTION : Gestion du Closed Three vs Open Three
-    
-    long long panic_penalty = 0;
-
-    if (opp_max_threat >= CLOSED_THREE) {
-        // Si l'adversaire a une menace sérieuse (Closed 3 ou mieux)...
-        
-        // ... Et que je n'ai pas une victoire quasi-immédiate (Open 4 ou Win) pour contrer...
-        if (my_max_threat < OPEN_FOUR) {
-            // ALORS : La menace adverse est prioritaire.
-            // Je la multiplie par 4.
-            // Exemple : Closed 3 (4M) * 4 = 16M de pénalité.
-            // Mon Open 3 (10M) ne suffit plus (10M - 16M = -6M). Je dois défendre.
-            panic_penalty = (long long)(opp_max_threat * 4);
+    // 3. Panique Proportionnelle (simplifiée avec la nouvelle échelle)
+    // La menace adverse est multipliée par un facteur selon son niveau
+    if (opp_max_threat >= OPEN_THREE) {
+        // Menace critique : je dois réagir sauf si j'ai mieux
+        if (my_max_threat < CLOSED_FOUR) {
+            // Pénalité = menace * 3 (pour forcer la défense)
+            final_score -= (long long)(opp_max_threat * 3);
         } else {
-            // SINON : C'est une course de vitesse (j'ai un Open 4).
-            // Je garde une pression standard (x2) pour privilégier mon attaque si elle est plus rapide.
-            panic_penalty = (long long)(opp_max_threat * 2);
+            // Course de vitesse : pénalité standard
+            final_score -= (long long)(opp_max_threat);
         }
-    } else {
-        // Menaces faibles (Open 2, etc.), pression standard
-        panic_penalty = (long long)(opp_max_threat * 2);
+    } else if (opp_max_threat >= CLOSED_THREE) {
+        // Menace sérieuse mais pas urgente
+        final_score -= (long long)(opp_max_threat * 2);
     }
 
-    final_score -= panic_penalty;
+    // 4. Captures (valent ~0.5 Open Three chacune)
+    final_score += (g->captures[player] * CAPTURE_BONUS); 
+    final_score -= (g->captures[opponent] * CAPTURE_BONUS);
 
-    // Bonus/Malus Captures
-    final_score += (g->captures[player] * 200000); 
-    final_score -= (g->captures[opponent] * 200000);
-
-    // Clamp pour rester dans int
-    if (final_score > 2000000000) final_score = 2000000000;
-    if (final_score < -2000000000) final_score = -2000000000;
+    // 5. Clamp
+    if (final_score > WIN_SCORE - 1) final_score = WIN_SCORE - 1;
+    if (final_score < -WIN_SCORE + 1) final_score = -WIN_SCORE + 1;
 
     return (int)final_score;
 }
 
 /* 
- * Vérifie si un coup en (x,y) crée un "Free Three" strict dans la direction (dx, dy).
- * Patterns reconnus :
- *  1.  . X X X .  (Standard)
- *  2.  . X _ X X . (Gap)
- *  3.  . X X _ X . (Gap)
- *  4.  . X X _ _ X . (Double Gap - AJOUTÉ)
+ * Vérifie si un coup en (x,y) CRÉE un "Free Three" dans la direction (dx, dy).
+ * 
+ * RÈGLE CRITIQUE : Le coup doit faire PARTIE du Free Three créé.
+ * Si le Free Three existait déjà sans ce coup, il ne compte pas.
+ * 
+ * Patterns reconnus (le 'X' marqué '*' est le coup joué) :
+ *  1.  . X X * .  ou  . X * X .  ou  . * X X .
+ *  2.  . X . * X .  ou  . * . X X .  etc.
  */
 int check_free_three_pattern(game *g, int x, int y, int dx, int dy, int player) {
-    // On simule la pose de la pierre
-    g->board[y * BOARD_SIZE + x] = player;
-
-    // On scanne une fenêtre de 9 cases autour du point (x,y) : [-4, +4]
-    // On cherche les motifs .XXX. ou .X.XX. ou .XX.X. ou .XX..X.
+    int opponent = (player == P1) ? P2 : P1;
     
-    // Construction d'un mini-buffer de la ligne pour simplifier l'analyse
-    int line[11]; // Indices 0 à 10. Le coup joué est au centre (index 5)
-    int center = 5;
+    // Construction d'un mini-buffer de la ligne
+    // On scanne 6 cases de chaque côté (indices -6 à +6, total 13 cases)
+    int line[13];
+    int center = 6;
     
-    for (int k = -5; k <= 5; k++) {
+    for (int k = -6; k <= 6; k++) {
         int nx = x + dx * k;
         int ny = y + dy * k;
-        if (!IS_VALID(nx, ny)) line[center + k] = -1; // Bord
-        else line[center + k] = g->board[ny * BOARD_SIZE + nx];
+        if (IS_VALID(nx, ny)) {
+            line[center + k] = g->board[ny * BOARD_SIZE + nx];
+        } else {
+            line[center + k] = opponent; // Hors plateau = bloqué
+        }
     }
 
-    // On remet la case vide pour ne pas corrompre le plateau
-    g->board[y * BOARD_SIZE + x] = EMPTY;
+    // IMPORTANT : On simule la pose de la pierre dans le buffer (pas sur le vrai plateau)
+    line[center] = player;
 
-    // Analyse des motifs
+    // --- Recherche de Free Three dont le coup fait PARTIE ---
     
-    // Pattern 1 : . X X X . (Continu)
-    for (int k = -2; k <= 0; k++) { 
-        if (line[center+k] == EMPTY && 
-            line[center+k+1] == player && 
-            line[center+k+2] == player && 
-            line[center+k+3] == player && 
-            line[center+k+4] == EMPTY) return 1;
+    // Pattern 1 : . X X X . (3 consécutives, fenêtre de 5)
+    // Le coup (center) doit être l'un des 3 X
+    for (int start = 0; start <= 8; start++) {
+        int end = start + 4; // Fenêtre [start, start+4]
+        
+        // Le coup doit être DANS la fenêtre des 3 pierres (pas sur les bords vides)
+        if (center < start + 1 || center > start + 3) continue;
+        
+        if (line[start] == EMPTY &&
+            line[start + 1] == player &&
+            line[start + 2] == player &&
+            line[start + 3] == player &&
+            line[start + 4] == EMPTY) {
+            
+            // Vérifier qu'il n'y a pas de 4ème pierre adjacente (sinon c'est un Four, pas un Three)
+            bool is_four = false;
+            if (start > 0 && line[start - 1] == player) is_four = true;
+            if (end + 1 < 13 && line[end + 1] == player) is_four = true;
+            
+            if (!is_four) {
+                return 1; // Free Three trouvé, et le coup en fait partie
+            }
+        }
     }
 
-    // Pattern 2 : . X _ X X . (Gap)
-    for (int k = -3; k <= 0; k++) {
-        if (line[center+k] == EMPTY && 
-            line[center+k+1] == player && 
-            line[center+k+2] == EMPTY && 
-            line[center+k+3] == player && 
-            line[center+k+4] == player && 
-            line[center+k+5] == EMPTY) return 1;
+    // Pattern 2 : . X X . X . (trou au milieu-droite, fenêtre de 6)
+    // Pierres aux positions : start+1, start+2, start+4
+    for (int start = 0; start <= 7; start++) {
+        // Le coup doit être l'une des 3 pierres
+        bool coup_in_pattern = (center == start + 1 || center == start + 2 || center == start + 4);
+        if (!coup_in_pattern) continue;
+        
+        if (line[start] == EMPTY &&
+            line[start + 1] == player &&
+            line[start + 2] == player &&
+            line[start + 3] == EMPTY &&
+            line[start + 4] == player &&
+            line[start + 5] == EMPTY) {
+            return 1;
+        }
     }
 
-    // Pattern 3 : . X X _ X . (Gap inverse)
-    for (int k = -3; k <= 0; k++) {
-        if (line[center+k] == EMPTY && 
-            line[center+k+1] == player && 
-            line[center+k+2] == player && 
-            line[center+k+3] == EMPTY && 
-            line[center+k+4] == player && 
-            line[center+k+5] == EMPTY) return 1;
-    }
-
-    // Pattern 4 : . X X _ _ X . (Double Gap) - AJOUT CRITIQUE
-    // Fenêtre de 7 cases : [EMPTY, P, P, EMPTY, EMPTY, P, EMPTY]
-    // Le coup joué peut être n'importe lequel des P.
-    for (int k = -4; k <= 0; k++) {
-        if (line[center+k] == EMPTY && 
-            line[center+k+1] == player && 
-            line[center+k+2] == player && 
-            line[center+k+3] == EMPTY && 
-            line[center+k+4] == EMPTY && 
-            line[center+k+5] == player && 
-            line[center+k+6] == EMPTY) return 1;
-    }
-    
-    // Pattern 4b : . X _ _ X X . (Double Gap Inverse)
-    for (int k = -4; k <= 0; k++) {
-        if (line[center+k] == EMPTY && 
-            line[center+k+1] == player && 
-            line[center+k+2] == EMPTY && 
-            line[center+k+3] == EMPTY && 
-            line[center+k+4] == player && 
-            line[center+k+5] == player && 
-            line[center+k+6] == EMPTY) return 1;
+    // Pattern 3 : . X . X X . (trou au milieu-gauche, fenêtre de 6)
+    // Pierres aux positions : start+1, start+3, start+4
+    for (int start = 0; start <= 7; start++) {
+        bool coup_in_pattern = (center == start + 1 || center == start + 3 || center == start + 4);
+        if (!coup_in_pattern) continue;
+        
+        if (line[start] == EMPTY &&
+            line[start + 1] == player &&
+            line[start + 2] == EMPTY &&
+            line[start + 3] == player &&
+            line[start + 4] == player &&
+            line[start + 5] == EMPTY) {
+            return 1;
+        }
     }
 
     return 0;
@@ -390,8 +384,8 @@ bool is_double_three(game *g, int idx, int player) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
     
-    // Optimisation : Si la case a des voisins ennemis trop proches qui bloquent tout, inutile de vérifier
-    // (Optionnel, on garde la logique brute pour la précision)
+    // Vérifier que la case est vide
+    if (g->board[idx] != EMPTY) return false;
 
     int free_threes = 0;
     int dx[] = {1, 0, 1, 1};
@@ -400,32 +394,35 @@ bool is_double_three(game *g, int idx, int player) {
     for (int d = 0; d < 4; d++) {
         if (check_free_three_pattern(g, x, y, dx[d], dy[d], player)) {
             free_threes++;
+            if (free_threes >= 2) return true; // Optimisation : on arrête dès qu'on en a 2
         }
     }
     
-    // Règle : Interdit si >= 2 Free Threes simultanés
-    return (free_threes >= 2);
+    return false;
 }
 
 void explain_double_three(game *g, int idx, int player) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
-    g->board[idx] = player; 
+    
+    printf("--- ANALYSE DOUBLE-THREE (%d, %d) ---\n", x, y);
+    
     int free_threes = 0;
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
     char *dir_names[] = {"Horizontal", "Vertical", "Diag Bas-Droite", "Diag Haut-Droite"};
 
-    printf("--- ANALYSE DOUBLE-THREE (%d, %d) ---\n", x, y);
     for (int d = 0; d < 4; d++) {
         if (check_free_three_pattern(g, x, y, dx[d], dy[d], player)) {
-            printf("  > Free Three détecté : %s\n", dir_names[d]);
+            printf("  > Free Three CRÉÉ par ce coup : %s\n", dir_names[d]);
             free_threes++;
         }
     }
-    if (free_threes >= 2) printf("  => COUP INTERDIT (Total: %d)\n", free_threes);
-    else printf("  => Coup Légal (Total: %d)\n", free_threes);
+    
+    if (free_threes >= 2) {
+        printf("  => COUP INTERDIT (Crée %d Free Threes simultanés)\n", free_threes);
+    } else {
+        printf("  => Coup autorisé (Crée %d Free Three)\n", free_threes);
+    }
     printf("---------------------------------------\n");
-
-    g->board[idx] = EMPTY; 
 }

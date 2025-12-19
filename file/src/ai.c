@@ -29,14 +29,19 @@ static bool check_real_win(game *g, int player) {
 
 /* Exécute la recherche pour une profondeur donnée avec Aspiration Window */
 static int run_aspiration_search(game *g, int depth, int prev_score, int *best_move_out, int ia_player, clock_t start) {
-    int alpha = INT_MIN;
-    int beta = INT_MAX;
+    // CORRECTION : Utiliser des bornes plus sûres
+    int alpha = -WIN_SCORE - 10000;
+    int beta = WIN_SCORE + 10000;
     int window = 500;
     
     // Initialisation de la fenêtre étroite
     if (depth > 2) {
         alpha = prev_score - window;
         beta = prev_score + window;
+        
+        // Clamp pour éviter les overflows
+        if (alpha < -WIN_SCORE - 10000) alpha = -WIN_SCORE - 10000;
+        if (beta > WIN_SCORE + 10000) beta = WIN_SCORE + 10000;
     }
 
     int loop_guard = 0; // Sécurité anti-boucle infinie
