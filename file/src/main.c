@@ -52,12 +52,15 @@ bool initialized(void *args, screen *windows, game *gameData)
     gameData->score[P2] = 0;
 
     gameData->current_hash = 0;
+    gameData->hint_idx = -1; // <--- INITIALISATION
 
     return true;
 }
 
-void putPiecesOnBoard(screen *windows, int *board)
+// Modifier la signature pour prendre game* au lieu de int*
+void putPiecesOnBoard(screen *windows, game *gameData)
 {
+    int *board = gameData->board;
     // On parcourt le tableau 1D comme une matrice pour l'affichage
     for (int y = 0; y < windows->board_size; y++)
     {
@@ -68,17 +71,22 @@ void putPiecesOnBoard(screen *windows, int *board)
             
             if (val == P1 || val == P2)
                 drawSquare(windows, x, y, val);
-            else if (val == PREVIS)
-                 drawSquare(windows, x, y, val); // Si tu as une couleur de prévis
         }
+    }
+
+    // DESSIN DU HINT (S'il est défini et que la case est vide)
+    if (gameData->hint_idx != -1 && board[gameData->hint_idx] == EMPTY)
+    {
+        drawSquare(windows, GET_X(gameData->hint_idx), GET_Y(gameData->hint_idx), 3);
     }
 }
 
-void resetScreen(screen *windows, int *board)
+// Mettre à jour resetScreen pour passer gameData
+void resetScreen(screen *windows, game *gameData)
 {
     printBlack(windows);
     putCadrillage(windows);
-    putPiecesOnBoard(windows, board);
+    putPiecesOnBoard(windows, gameData);
 }
 
 void gameLoop(void *param)
@@ -87,18 +95,21 @@ void gameLoop(void *param)
     screen      *windows = args->windows;
     game        *gameData = args->gameData;
 
+    // Passer gameData au lieu de gameData->board
+    resetScreen(windows, gameData);
+    
     if (windows->changed)
     {
-        if (windows->resized)
-        {
-            windows->resized = false;
-            resetScreen(windows, gameData->board);
-        }
+        // if (windows->resized)
+        // {
+        windows->resized = false;
+        // }
 
         // Gestion du tour IA
         if (isIaTurn(gameData->iaTurn, gameData->turn) && !gameData->game_over)
         {
             makeIaMove(gameData, windows);
+            gameData->hint_idx = -1; // On efface le hint quand l'IA joue
             
             // Après le coup de l'IA, on change de tour et on redraw
             checkVictoryCondition(gameData);

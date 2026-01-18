@@ -1,6 +1,7 @@
 NAME        := gomoku
 
 # --- Directories ---
+# Architecture définie : src/file/*.c et src/include
 SRC_DIR     := file/src
 INC_DIR     := file/include
 OBJ_DIR     := obj
@@ -9,24 +10,25 @@ MLX_DIR     := $(LIB_DIR)/MLX42
 
 # --- Compiler & Flags ---
 CC          := cc
-
-# --- Gestion du mode DEBUG ---
-ifdef DEBUG
-    CFLAGS      := -Ofast -g -DDEBUG=1 -MMD -MP
-    LOG         := @printf
-else
-    CFLAGS      := -Ofast -g -MMD -MP
-    LOG         := @:
-endif
-
+# Flags demandés (-Ofast -g -DDEBUG=1). 
+# J'ajoute -MMD -MP pour la gestion automatique des dépendances (.h)
+CFLAGS      := -Ofast -g -DDEBUG=1 -MMD -MP
 CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include
 
+# Pour réactiver les warnings stricts plus tard, décommente cette ligne :
+# CFLAGS    += -Wextra -Wall -Werror
+
 # --- Libraries ---
+# Détection basique pour Linux vs Mac (Optional, based on your previous config)
 LGLFW_PATH  := /usr/lib/x86_64-linux-gnu
 LIBS        := $(MLX_DIR)/build/libmlx42.a -ldl -lglfw -pthread -lm -L$(LGLFW_PATH)
 
 # --- Sources & Objects ---
+# Trouve tous les .c dans src/file
 SRCS        := $(shell find $(SRC_DIR) -iname "*.c")
+
+# Crée la liste des objets dans obj/ en gardant la structure ou en aplanissant
+# Ici, on remplace le chemin SRC_DIR par OBJ_DIR
 OBJS        := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 
 # --- Rules ---
@@ -36,13 +38,13 @@ all: libmlx $(NAME)
 # Linkage final
 $(NAME): $(OBJS)
 	@$(CC) $(OBJS) $(LIBS) -o $(NAME)
-	$(LOG) "✅ Linked: $(NAME)\n"
+	@printf "✅ Linked: $(NAME)\n"
 
 # Compilation des objets
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -c $< -o $@
-	$(LOG) "🔨 Compiling: $(notdir $<)\n"
+	@printf "🔨 Compiling: $(notdir $<)\n"
 
 # Gestion de la MLX42
 libmlx:
@@ -51,7 +53,7 @@ libmlx:
 	fi
 	@cmake $(MLX_DIR) -B $(MLX_DIR)/build && make -C $(MLX_DIR)/build -j4
 
-# Docker rule
+# Docker rule (conservée)
 docker: all
 	@cp $(NAME) ./file/$(NAME) 2>/dev/null || :
 	docker compose up --build -d
@@ -59,12 +61,12 @@ docker: all
 # Nettoyage
 clean:
 	@rm -rf $(OBJ_DIR)
-	$(LOG) "🧹 Cleaned object files.\n"
+	@printf "🧹 Cleaned object files.\n"
 
 fclean: clean
 	@rm -f $(NAME)
 	@rm -rf $(MLX_DIR)/build
-	$(LOG) "🗑️  Removed executable: $(NAME).\n"
+	@printf "🗑️  Removed executable: $(NAME).\n"
 
 re: fclean all
 
@@ -73,7 +75,7 @@ git: fclean
 	git add .
 	git commit -m "auto commit"
 	git push
-	
+
 brew:
 	brew install glfw
 

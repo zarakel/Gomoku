@@ -5,8 +5,6 @@ int get_rgba(int r, int g, int b, int a)
     return (r << 24 | g << 16 | b << 8 | a);
 }
 
-#include "../include/gomoku.h"
-
 // Dessine le rectangle bleu du bouton (Appelé à chaque redessin du plateau)
 void drawResetButton(screen *windows)
 {
@@ -33,7 +31,7 @@ void initGUI(screen *windows)
 
     // On crée l'image du texte "RESTART" une bonne fois pour toutes
     // On centre un peu le texte (ajustement manuel +10, +5)
-    windows->restart_text = mlx_put_string(windows->mlx, "RESTART", BTN_X + 12, BTN_Y + 5);
+    // windows->restart_text = mlx_put_string(windows->mlx, "RESTART", BTN_X + 12, BTN_Y + 5);
 }
 
 /* safe pixel put: check boundaries before writing */
@@ -119,6 +117,8 @@ int teamColor(unsigned short int team)
         return get_rgba(0, 255, 0, 255); // Vert pour P1
     case P2:    // 2
         return get_rgba(255, 0, 0, 255); // Rouge pour P2
+    case 3:     // HINT (Coup suggéré)
+        return get_rgba(255, 255, 255, 255); // Blanc
     default:
         return get_rgba(255, 255, 255, 255);
     }

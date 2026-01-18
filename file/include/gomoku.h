@@ -26,10 +26,10 @@
 #define HEIGHT 818
 
 // Bouton Reset
-#define BTN_X 430
-#define BTN_Y 10
+#define BTN_X 700
+#define BTN_Y 3
 #define BTN_W 80
-#define BTN_H 30
+#define BTN_H 25
 
 // Marges Graphiques (Réintégrées)
 #define BOARD_MARGIN_LEFT 30
@@ -82,6 +82,18 @@
 
 // --- STRUCTURES ---
 
+// Tables de score pré-calculées (à ajuster selon vos préférences)
+// C'est beaucoup plus rapide que des 'if' en cascade
+static const int SCORE_TABLE[6][3] = {
+    // [Consecutive][OpenEnds]
+    {0, 0, 0},             // 0 pierres
+    {1, 10, 15},           // 1 pierre  (Fermé, 1 bout, 2 bouts)
+    {10, 50, 200},          // 2 pierres
+    {100, 1000, 5000},      // 3 pierres
+    {5000, 10000, 50000},   // 4 pierres
+    {WIN_SCORE, WIN_SCORE, WIN_SCORE} // 5 pierres
+};
+
 typedef struct screen
 {
     mlx_t       *mlx;
@@ -117,6 +129,7 @@ typedef struct game
     bool    game_over;
     timer   ia_timer;
     uint64_t current_hash;
+    int     hint_idx; // <--- AJOUTER CECI
 } game;
 
 typedef struct both

@@ -6,7 +6,7 @@ Create unitest macrotest and end to end test
 
 Create the min-max algo
  - move-suggestion feature (Mandatory)
- - 10 depth for the bonus
+ - 11 depth for the bonus
  - timer that counts how much time your AI takes to find its next move. (<=500 ms/move) [X]
 
 Create the gomoku game
@@ -18,14 +18,12 @@ Put it online?
 
 Bonus:
  - Multiple starting condition
- - Pleasing interface
- - Online
  - Connect to a llm for roasting the player
+    Avoir des flashbang
+    Ajouter captch et brainroot lorsque l'on gagne une piece
+    Changer les couleurs des pieces sans aucune logique
 
 Quand on prend une piece elle disparait beaucoup trop lentement
-Changer les couleurs des pieces sans aucune logique
-Avoir des flashbang
-Ajouter captch et brainroot lorsque l'on gagne une piece
 Faire des zones ou les couleurs sont inversee
 Mettre des bonus qui donne des effets lumineux ou des virus
 Ajouter des stats "celui qui possede le plus de couleur"
