@@ -853,6 +853,21 @@ int evaluate_board(game *g, int player) {
     return (int)final_score;
 }
 ```
+Étape	Condition	Action
+0	IA WIN_SCORE	Jouer (victoire)
+0.5	IA Gapped Four	Jouer (victoire)
+1	Adversaire WIN_SCORE / 5 paires	Bloquer
+2	Scan des menaces	-
+3.1	Adversaire CLOSED_FOUR	Bloquer
+3.2	Adversaire OPEN_THREE	Bloquer (PRIORITÉ !)
+3.3	Adversaire Gapped Three	Bloquer
+4.1	Adversaire → 4+ paires	Bloquer capture
+4.2	Adversaire 3+ paires + capture	Bloquer capture
+5	IA OPEN_FOUR / CLOSED_FOUR / OPEN_THREE	Jouer
+6	Capture offensive	Jouer
+7	Adversaire CLOSED_THREE	Bloquer
+8	Capture défensive (2+ paires)	Bloquer
+9	Rien de critique	Minimax
 
 ### 9.5 Optimisation : Scan Unique par Ligne
 

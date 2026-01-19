@@ -414,6 +414,23 @@ int evaluate_board(game *g, int player) {
         final_score += capture_diff * 40000; // Pénalité plus forte
     }
 
+    // NOUVEAU : Intégrer les captures dans le score global
+    int my_capture_threat = 0;
+    int opp_capture_threat = 0;
+
+    // Calculer les menaces de capture
+    if (g->captures[player] >= 4) my_capture_threat = WIN_SCORE;
+    else if (g->captures[player] >= 3) my_capture_threat = CLOSED_FOUR;
+    else if (g->captures[player] >= 2) my_capture_threat = OPEN_THREE;
+
+    if (g->captures[opponent] >= 4) opp_capture_threat = WIN_SCORE;
+    else if (g->captures[opponent] >= 3) opp_capture_threat = CLOSED_FOUR;
+    else if (g->captures[opponent] >= 2) opp_capture_threat = OPEN_THREE;
+
+    // Ajouter au score final
+    final_score += my_capture_threat / 10;  // Bonus pour nos captures
+    final_score -= opp_capture_threat / 5;  // Pénalité pour captures adverses (plus forte)
+
     // 7. Clamp
     if (final_score > WIN_SCORE - 1) final_score = WIN_SCORE - 1;
     if (final_score < -WIN_SCORE + 1) final_score = -WIN_SCORE + 1;

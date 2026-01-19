@@ -191,9 +191,9 @@ void    checkPieceCapture(game *gameData, screen *windows, int lx, int ly);
 bool    in_bounds(int x, int y);
 int     apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_indices_buffer);
 int     count_potential_captures(game *g, int lx, int ly, int player);
-int     count_vulnerable_pairs(game *g, int player);      // NOUVEAU
-int     find_capture_move(game *g, int player);           // NOUVEAU
-int     find_capture_block_move(game *g, int player);     // NOUVEAU
+int     count_vulnerable_pairs(game *g, int player);
+int     find_capture_move(game *g, int player);
+int     find_capture_block_move(game *g, int player);
 
 // victory.c
 void    checkVictoryCondition(game *gameData);
@@ -204,7 +204,7 @@ int     get_point_score(game *g, int x, int y, int player);
 bool    is_double_three(game *g, int idx, int player);
 void    explain_double_three(game *g, int idx, int player);
 int     find_gapped_four_hole(game *g, int player);
-int     find_gapped_three_hole(game *g, int player);  // NOUVEAU
+int     find_gapped_three_hole(game *g, int player);
 
 // ai.c
 void    makeIaMove(game *gameData, screen *windows);
@@ -227,5 +227,62 @@ int quick_evaluate_move(game *g, int idx, int player);
 int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
 int solve_vcf(game *g, int ia_player, clock_t start_time);
 int vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time);
+
+// ============================================================================
+// AI THREATS (ai_threats.c)
+// ============================================================================
+
+// Scanne les menaces EXISTANTES sur le plateau (alignements déjà formés)
+int     scan_existing_threats(game *g, int player, int *block_idx);
+
+// Scanne toutes les menaces (existantes + futures)
+void    find_all_threats(game *g, int player, int *best_idx, int *best_score);
+
+// Compte les menaces sérieuses (lignes de 3+ pierres avec potentiel)
+int     count_serious_threats(game *g, int player);
+
+// Compte les Gapped Threes d'un joueur
+int     count_gapped_threes(game *g, int player);
+
+// Évalue un coup avec simulation complète des captures
+int     evaluate_move_with_captures_full(game *g, int idx, int player);
+
+// ============================================================================
+// AI CAPTURES (ai_captures.c)
+// ============================================================================
+
+// Calcule le "Threat Level" unifié (captures convertis en échelle alignement)
+int     compute_unified_threat_level(game *g, int player);
+
+// Score de danger capture pour un joueur
+int     get_capture_danger_score(game *g, int player);
+
+// Vérifie si un alignement est vulnérable aux captures
+bool    is_alignment_vulnerable(game *g, int player);
+
+// Analyse la sécurité des paires (protégées vs exposées)
+void    analyze_pair_safety(game *g, int player, int *protected_pairs, int *exposed_pairs);
+
+// Trouve le meilleur coup de capture (pas juste le premier)
+int     find_best_capture_move(game *g, int player);
+
+// Trouve le blocage de capture le plus urgent
+int     find_critical_capture_block(game *g, int player);
+
+// ============================================================================
+// AI TACTICS (ai_tactics.c)
+// ============================================================================
+
+// Trouve un coup gagnant (alignement WIN_SCORE)
+int     find_winning_move(game *g, int player);
+
+// Trouve le meilleur coup de blocage contre une menace
+int     find_blocking_move(game *g, int threat_player);
+
+// Trouve un coup mixte (attaque + défense simultanée)
+int     find_best_dual_purpose_move(game *g, int ia_player, int opponent);
+
+// Trouve les cases de blocage pour les lignes d'un joueur
+int     find_line_blocking_moves(game *g, int player, int *blocking_moves, int max_moves);
 
 #endif

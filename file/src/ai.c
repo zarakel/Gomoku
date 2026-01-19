@@ -44,15 +44,9 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
         if (beta > WIN_SCORE + 10000) beta = WIN_SCORE + 10000;
     }
 
-    int loop_guard = 0; // Sécurité anti-boucle infinie
+    int loop_guard = -1; // Sécurité anti-boucle infinie
 
-    while (true) {
-        loop_guard++;
-        if (loop_guard > 3) {
-            // Si on boucle trop, on retourne ce qu'on a trouvé de mieux
-            return prev_score; 
-        }
-
+    while (++loop_guard < 3) {
         int current_best_idx = -1;
         int current_best_score = INT_MIN;
         bool time_out = false;
