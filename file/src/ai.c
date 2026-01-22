@@ -118,6 +118,7 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
         *best_move_out = current_best_idx;
         return current_best_score;
     }
+    return prev_score;
 }
 
 /* Orchestre l'Iterative Deepening */
@@ -178,29 +179,57 @@ static void finalize_move(game *g, screen *win, int move_idx, int player, clock_
 }
 
 void makeIaMove(game *gameData, screen *windows) {
-    int opponent = (gameData->turn == P1) ? P2 : P1;
-    
-    // --- SÉCURITÉ RENFORCÉE ---
-    // On ne fait pas confiance au score incrémental pour la défaite.
-    // On scanne le plateau.
-    if (check_real_win(gameData, opponent)) {
-        printf(">>> L'IA voit (scan réel) qu'elle a perdu. Elle ne joue pas.\n");
-        return;
-    }
-    // --------------------------
-
+    launchTimer(&gameData->ia_timer);
     clock_t start = clock();
-    int ia_player = gameData->turn;
-    
-    // 1. VCF / Victoire Immédiate
-    int best_move = solve_vcf(gameData, ia_player, start);
-    bool is_vcf = (best_move != -1);
 
-    // 2. Minimax (Si pas de VCF)
-    if (!is_vcf) {
+    int ia_player = gameData->turn;
+    int opponent = (ia_player == P1) ? P2 : P1;
+    
+    #ifdef DEBUG
+    printf("\n========== IA TURN ==========\n");
+    
+    // Afficher toutes les lignes de 3+ pierres adverses
+    int dx[] = {1, 0, 1, 1};
+    int dy[] = {0, 1, 1, -1};
+    char* dir_names[] = {"H", "V", "D\\", "D/"};
+    
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (gameData->board[idx] != opponent) continue;
+        int x = GET_X(idx), y = GET_Y(idx);
+        
+        for (int d = 0; d < 4; d++) {
+            // Compter pierres dans cette direction
+            int stones = 1;
+            for (int k = 1; k < 5; k++) {
+                int nx = x + dx[d]*k, ny = y + dy[d]*k;
+                if (!IS_VALID(nx, ny)) break;
+                if (gameData->board[GET_INDEX(nx, ny)] == opponent) stones++;
+                else break;
+            }
+            for (int k = 1; k < 5; k++) {
+                int nx = x - dx[d]*k, ny = y - dy[d]*k;
+                if (!IS_VALID(nx, ny)) break;
+                if (gameData->board[GET_INDEX(nx, ny)] == opponent) stones++;
+                else break;
+            }
+            
+            if (stones >= 3) {
+                printf("ALERTE: %d pierres adverses en %s depuis (%d,%d)\n",
+                       stones, dir_names[d], x, y);
+            }
+        }
+    }
+    #endif
+    
+    /* Phase 1 : Décision tactique (remplace solve_vcf) */
+    int best_move = make_tactical_decision(gameData, ia_player, start);
+    bool is_tactical = (best_move != -1);
+
+    /* Phase 2 : Minimax si pas de décision tactique */
+    if (!is_tactical) {
         best_move = run_iterative_deepening(gameData, ia_player, start);
     }
 
-    //3. Application
-    finalize_move(gameData, windows, best_move, ia_player, start, is_vcf);
+    /* Applique le coup final et met à jour l'UI */
+    finalize_move(gameData, windows, best_move, ia_player, start, is_tactical);
 }

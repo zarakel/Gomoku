@@ -194,6 +194,7 @@ int     count_potential_captures(game *g, int lx, int ly, int player);
 int     count_vulnerable_pairs(game *g, int player);
 int     find_capture_move(game *g, int player);
 int     find_capture_block_move(game *g, int player);
+int     find_vulnerable_pair_protection(game *g, int player);  // NOUVEAU
 
 // victory.c
 void    checkVictoryCondition(game *gameData);
@@ -225,64 +226,107 @@ int quick_evaluate_move(game *g, int idx, int player);
 
 // ai_search.c
 int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
-int solve_vcf(game *g, int ia_player, clock_t start_time);
+int solve_vcf(game *g, int ia_player, clock_t start_time);  // Temporaire, sera supprimé
 int vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time);
 
-// ============================================================================
-// AI THREATS (ai_threats.c)
-// ============================================================================
+// ai_decision.c (NOUVEAU)
+int make_tactical_decision(game *g, int ia_player, clock_t start_time);
 
-// Scanne les menaces EXISTANTES sur le plateau (alignements déjà formés)
-int     scan_existing_threats(game *g, int player, int *block_idx);
-
-// Scanne toutes les menaces (existantes + futures)
+// ai_threats.c
+// int     scan_existing_threats(game *g, int player, int *block_idx);
 void    find_all_threats(game *g, int player, int *best_idx, int *best_score);
-
-// Compte les menaces sérieuses (lignes de 3+ pierres avec potentiel)
 int     count_serious_threats(game *g, int player);
-
-// Compte les Gapped Threes d'un joueur
 int     count_gapped_threes(game *g, int player);
-
-// Évalue un coup avec simulation complète des captures
 int     evaluate_move_with_captures_full(game *g, int idx, int player);
+int     detect_convergent_threats(game *g, int player, int *critical_moves, int *critical_count);
 
-// ============================================================================
-// AI CAPTURES (ai_captures.c)
-// ============================================================================
-
-// Calcule le "Threat Level" unifié (captures convertis en échelle alignement)
+// ai_captures.c
 int     compute_unified_threat_level(game *g, int player);
-
-// Score de danger capture pour un joueur
-int     get_capture_danger_score(game *g, int player);
-
-// Vérifie si un alignement est vulnérable aux captures
-bool    is_alignment_vulnerable(game *g, int player);
-
-// Analyse la sécurité des paires (protégées vs exposées)
-void    analyze_pair_safety(game *g, int player, int *protected_pairs, int *exposed_pairs);
-
-// Trouve le meilleur coup de capture (pas juste le premier)
 int     find_best_capture_move(game *g, int player);
-
-// Trouve le blocage de capture le plus urgent
 int     find_critical_capture_block(game *g, int player);
 
-// ============================================================================
-// AI TACTICS (ai_tactics.c)
-// ============================================================================
-
-// Trouve un coup gagnant (alignement WIN_SCORE)
+// ai_tactics.c
 int     find_winning_move(game *g, int player);
-
-// Trouve le meilleur coup de blocage contre une menace
+int     count_winning_moves(game *g, int player, int *first_win, int *second_win);  // NOUVEAU
 int     find_blocking_move(game *g, int threat_player);
-
-// Trouve un coup mixte (attaque + défense simultanée)
 int     find_best_dual_purpose_move(game *g, int ia_player, int opponent);
-
-// Trouve les cases de blocage pour les lignes d'un joueur
 int     find_line_blocking_moves(game *g, int player, int *blocking_moves, int max_moves);
+
+// --- CONSTANTES TSS ---
+#define TSS_WIN         1
+#define TSS_UNKNOWN     0
+#define TSS_LOSS        -1
+#define TSS_MAX_DEPTH   8   /* 4 coups de chaque joueur */
+
+// tss.c
+int tss_find_winning_sequence(game *g, int player, clock_t start_time, int time_budget_ms);
+int tss_find_threat_to_block(game *g, int ia_player, clock_t start_time, int time_budget_ms);
+int detect_capture_to_double_threat(game *g, int player);
+int detect_capture_creates_threat(game *g, int player);
+int detect_pre_double_threat(game *g, int player);
+int detect_capture_creates_double_closed_four(game *g, int player);
+int detect_capture_connects_segments(game *g, int player);  // NOUVEAU
+
+/* Constantes pour le système unifié de menaces */
+#define MAX_UNIFIED_THREATS 64
+
+// Ajouter après les autres structures
+typedef struct {
+    int block_idx;
+    int score;
+    int direction;
+    int stones;
+} ExistingThreat;
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * STRUCTURE UNIFIÉE DE MENACE
+ * Représente TOUTE menace, qu'elle soit d'alignement ou de capture
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+typedef enum {
+    THREAT_ALIGNMENT,       /* Menace par alignement (3-4-5 pierres) */
+    THREAT_CAPTURE,         /* Menace par capture (paires) */
+    THREAT_CAPTURE_ALIGN    /* Capture qui crée un alignement */
+} ThreatType;
+
+typedef struct {
+    int         index;              /* Case concernée (blocage ou coup) */
+    int         score;              /* Score de la menace (CLOSED_THREE, OPEN_FOUR, etc.) */
+    int         moves_to_win;       /* Nombre de coups avant victoire (1 = immédiat) */
+    int         stones;             /* Nombre de pierres (pour alignement) */
+    int         captures;           /* Nombre de paires capturées (pour capture) */
+    int         direction;          /* Direction (0-3 pour alignement, -1 pour capture) */
+    ThreatType  type;               /* Type de menace */
+    bool        is_blocking;        /* true = on bloque, false = on attaque */
+} UnifiedThreat;
+
+/* Constantes pour moves_to_win */
+#define MOVES_IMMEDIATE     1   /* Victoire/défaite ce tour */
+#define MOVES_NEXT          2   /* Victoire/défaite prochain tour */
+#define MOVES_TWO_AWAY      3   /* Victoire/défaite dans 2 tours */
+#define MOVES_DEVELOPING    4   /* Menace en développement */
+
+// Prototypes pour le nouveau système unifié
+int scan_all_existing_threats(game *g, int player, ExistingThreat *threats, int max_threats);
+int scan_unified_threats(game *g, int player, UnifiedThreat *threats, int max_threats);
+int scan_unified_opponent_threats(game *g, int ia_player, UnifiedThreat *threats, int max_threats);
+int get_best_response(game *g, int ia_player, UnifiedThreat *all_threats, int threat_count);
+
+/* ai_threat_scan.c */
+int compute_moves_to_win_alignment(int score, int stones, int open_ends);
+int compute_moves_to_win_capture(int current_captures, int potential_captures);
+int scan_alignment_threats(game *g, int player, UnifiedThreat *threats, int start_idx, int max_threats);
+int scan_capture_threats(game *g, int player, UnifiedThreat *threats, int start_idx, int max_threats);
+
+/* ai_threat_response.c */
+int scan_dangerous_opponent_captures(game *g, int player, UnifiedThreat *threats, int start_idx, int max_threats);
+int compare_unified_threats(const void *a, const void *b);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * AI MULTI-THREAT DETECTION (ai_multi_threat.c)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+int analyze_multi_threats(game *g, int ia_player);
+bool should_block_instead_of_develop(game *g, int ia_player);
 
 #endif

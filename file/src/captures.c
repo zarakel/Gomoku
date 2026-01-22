@@ -267,3 +267,103 @@ int find_capture_block_move(game *g, int player) {
     }
     return -1;
 }
+
+/*
+ * NOUVELLE FONCTION : Trouve une case qui protège nos paires vulnérables
+ * Une paire est vulnérable si l'adversaire peut la capturer au prochain coup
+ * 
+ * Stratégies de protection :
+ * 1. Bloquer la case où l'adversaire capturerait
+ * 2. Ajouter une pierre pour créer un pattern non-capturable (3 pierres au lieu de 2)
+ * 3. Capturer nous-mêmes pour réduire la pression
+ */
+int find_vulnerable_pair_protection(game *g, int player) {
+    int opponent = (player == P1) ? P2 : P1;
+    
+    const int dirs[4][2] = {
+        {1, 0}, {0, 1}, {1, 1}, {1, -1}
+    };
+    
+    int best_protection = -1;
+    int best_score = -1;
+    
+    /* Scanner toutes nos pierres pour trouver les paires vulnérables */
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != player) continue;
+        
+        int x = GET_X(idx);
+        int y = GET_Y(idx);
+        
+        for (int d = 0; d < 4; d++) {
+            int dx = dirs[d][0];
+            int dy = dirs[d][1];
+            
+            /* Pattern vulnérable : . OPP ME ME OPP_CAN_PLAY */
+            /* Ou : OPP_CAN_PLAY ME ME OPP . */
+            
+            /* Vérifier si c'est le début d'une paire */
+            int x_next = x + dx;
+            int y_next = y + dy;
+            if (!IS_VALID(x_next, y_next)) continue;
+            if (g->board[GET_INDEX(x_next, y_next)] != player) continue;
+            
+            /* On a une paire à (x,y) et (x_next, y_next) */
+            
+            /* Vérifier vulnérabilité côté "avant" */
+            int x_before = x - dx;
+            int y_before = y - dy;
+            int x_after = x_next + dx;
+            int y_after = y_next + dy;
+            
+            /* Pattern : EMPTY - ME - ME - OPPONENT (capturable) */
+            if (IS_VALID(x_before, y_before) && IS_VALID(x_after, y_after)) {
+                int idx_before = GET_INDEX(x_before, y_before);
+                int idx_after = GET_INDEX(x_after, y_after);
+                
+                if (g->board[idx_before] == EMPTY && g->board[idx_after] == opponent) {
+                    /* Vulnérable ! L'adversaire peut jouer en idx_before */
+                    /* Protection : jouer nous-mêmes en idx_before */
+                    int protection_score = evaluate_move_with_captures_full(g, idx_before, player);
+                    if (protection_score > best_score || best_protection == -1) {
+                        best_score = protection_score;
+                        best_protection = idx_before;
+                    }
+                }
+                
+                /* Pattern inverse : OPPONENT - ME - ME - EMPTY */
+                if (g->board[idx_before] == opponent && g->board[idx_after] == EMPTY) {
+                    int protection_score = evaluate_move_with_captures_full(g, idx_after, player);
+                    if (protection_score > best_score || best_protection == -1) {
+                        best_score = protection_score;
+                        best_protection = idx_after;
+                    }
+                }
+            }
+            
+            /* Aussi vérifier 2 cases avant/après (pattern étendu) */
+            int x_before2 = x - 2*dx;
+            int y_before2 = y - 2*dy;
+            int x_after2 = x_next + 2*dx;
+            int y_after2 = y_next + 2*dy;
+            
+            /* Pattern : OPP - EMPTY - ME - ME - ? */
+            if (IS_VALID(x_before, y_before) && IS_VALID(x_before2, y_before2)) {
+                int idx_before = GET_INDEX(x_before, y_before);
+                int idx_before2 = GET_INDEX(x_before2, y_before2);
+                
+                if (g->board[idx_before] == EMPTY && g->board[idx_before2] == opponent) {
+                    /* Vulnérable via pattern OPP - empty - ME - ME */
+                    /* Protection : jouer en idx_before pour casser le pattern */
+                    int protection_score = evaluate_move_with_captures_full(g, idx_before, player);
+                    protection_score += 50000; /* Bonus car c'est une protection */
+                    if (protection_score > best_score || best_protection == -1) {
+                        best_score = protection_score;
+                        best_protection = idx_before;
+                    }
+                }
+            }
+        }
+    }
+    
+    return best_protection;
+}
