@@ -428,31 +428,39 @@ int analyze_multi_threats(game *g, int ia_player) {
         }
     }
     
-    /* RÈGLE 4 : 2+ formations dangereuses (3 pierres, 1+ open) 
-     * et on n'a pas de formation équivalente */
-    if (opp_analysis.dangerous_count >= 2 && my_analysis.dangerous_count < 2) {
-        #ifdef DEBUG
-        printf("MULTI-THREAT: %d formations dangereuses adverses vs %d nôtres\n",
-               opp_analysis.dangerous_count, my_analysis.dangerous_count);
-        printf("MULTI-THREAT: Blocage préventif en (%d,%d)\n",
-               GET_X(opp_analysis.best_block), GET_Y(opp_analysis.best_block));
-        #endif
+    /* RÈGLE 4 MODIFIÉE : 2+ formations de 2 pierres avec pierres partagées = DANGER PRÉCOCE */
+    if (opp_analysis.count >= 2 && opp_analysis.shared_stones >= 1) {
+        /* Compter les bonnes formations de 2 pierres */
+        int good_two_formations = 0;
+        for (int i = 0; i < opp_analysis.count; i++) {
+            Formation *f = &opp_analysis.formations[i];
+            if (f->stone_count == 2 && f->open_ends >= 2 && f->potential >= 6) {
+                good_two_formations++;
+            }
+        }
         
-        if (opp_analysis.best_block != -1 &&
-            !is_double_three(g, opp_analysis.best_block, ia_player)) {
-            return opp_analysis.best_block;
+        if (good_two_formations >= 2) {
+            #ifdef DEBUG
+            printf("MULTI-THREAT: %d formations de 2 pierres + %d pierres partagées = DANGER !\n",
+                   good_two_formations, opp_analysis.shared_stones);
+            printf("MULTI-THREAT: Blocage préventif en (%d,%d)\n",
+                   GET_X(opp_analysis.best_block), GET_Y(opp_analysis.best_block));
+            #endif
+            
+            if (opp_analysis.best_block != -1 &&
+                !is_double_three(g, opp_analysis.best_block, ia_player)) {
+                return opp_analysis.best_block;
+            }
         }
     }
     
-    /* RÈGLE 5 : Pierres partagées adverses - danger de multi-formation */
-    if (opp_analysis.shared_stones >= 2 && opp_analysis.dangerous_count >= 1) {
-        /* Les pierres partagées créent des formations difficiles à bloquer */
+    /* RÈGLE 5 MODIFIÉE : Pierres partagées avec ANY formation = vigilance */
+    if (opp_analysis.shared_stones >= 1 && opp_analysis.count >= 2) {
         #ifdef DEBUG
-        printf("MULTI-THREAT: %d pierres partagées détectées, risque élevé\n",
-               opp_analysis.shared_stones);
+        printf("MULTI-THREAT: %d pierres partagées avec %d formations\n",
+               opp_analysis.shared_stones, opp_analysis.count);
         #endif
         
-        /* Bloquer la formation la plus avancée */
         if (opp_analysis.best_block != -1 &&
             !is_double_three(g, opp_analysis.best_block, ia_player)) {
             return opp_analysis.best_block;
@@ -479,8 +487,15 @@ bool should_block_instead_of_develop(game *g, int ia_player) {
     MultiThreatAnalysis current;
     scan_all_formations(g, opponent, &current);
     
-    /* Si l'adversaire a déjà 2+ formations de 2 pierres avec bon potentiel,
-     * on devrait bloquer plutôt que développer */
+    /* NOUVELLE RÈGLE : Si l'adversaire a des pierres partagées, bloquer */
+    if (current.shared_stones >= 1 && current.count >= 2) {
+        #ifdef DEBUG
+        printf("PRÉVENTION: %d pierres partagées détectées !\n", current.shared_stones);
+        #endif
+        return true;
+    }
+    
+    /* Si l'adversaire a déjà 2+ formations de 2 pierres avec bon potentiel */
     int good_two_stone_formations = 0;
     for (int i = 0; i < current.count; i++) {
         Formation *f = &current.formations[i];
@@ -496,6 +511,5 @@ bool should_block_instead_of_develop(game *g, int ia_player) {
     }
     #endif
     
-    /* Si 2+ bonnes formations de 2 pierres, il faut en perturber une */
     return (good_two_stone_formations >= 2);
 }

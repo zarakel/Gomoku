@@ -507,23 +507,36 @@ int get_best_response(game *g, int ia_player, UnifiedThreat *all_threats, int th
      * ══════════════════════════════════════════════════════════════════════ */
     
     /* Vérification préventive : l'adversaire construit-il plusieurs formations ? */
+    /* ══════════════════════════════════════════════════════════════════════
+     * NOUVELLE VÉRIFICATION : Multi-formations adverses AVANT le TSS
+     * ══════════════════════════════════════════════════════════════════════ */
+    
+    /* Si l'adversaire a des pierres partagées ou 2+ formations, NE PAS utiliser le TSS */
     if (should_block_instead_of_develop(g, ia_player)) {
         #ifdef DEBUG
-        printf("TSS ANNULÉ: Prévention multi-formation adverse\n");
+        printf("TSS ANNULÉ: Multi-formations adverses détectées\n");
         #endif
-        /* Ne pas utiliser le TSS, passer au Minimax qui sera plus défensif */
-    } else {
-        /* TSS normal - utiliser la fonction existante */
-        clock_t start = clock();
-        int tss_move = tss_find_winning_sequence(g, ia_player, start, 50);
-        if (tss_move != -1) {
-            if (!is_double_three(g, tss_move, ia_player)) {
-                #ifdef DEBUG
-                printf("TSS: Séquence gagnante trouvée ! Coup: (%d, %d)\n",
-                       GET_X(tss_move), GET_Y(tss_move));
-                #endif
-                return tss_move;
-            }
+        
+        /* Chercher le meilleur blocage via analyze_multi_threats */
+        int block = analyze_multi_threats(g, ia_player);
+        if (block != -1) {
+            return block;
+        }
+        
+        /* Sinon, passer au Minimax */
+        return -1;
+    }
+
+    /* TSS normal uniquement si pas de danger multi-formation */
+    clock_t start = clock();
+    int tss_move = tss_find_winning_sequence(g, ia_player, start, 50);
+    if (tss_move != -1) {
+        if (!is_double_three(g, tss_move, ia_player)) {
+            #ifdef DEBUG
+            printf("TSS: Séquence gagnante trouvée ! Coup: (%d, %d)\n",
+                   GET_X(tss_move), GET_Y(tss_move));
+            #endif
+            return tss_move;
         }
     }
     
