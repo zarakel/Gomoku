@@ -14,9 +14,10 @@
  * Retourne la case qui donne WIN_SCORE immédiatement
  * ============================================================================ */
 
-int find_winning_move(game *g, int player) {
+ int find_winning_move(game *g, int player) {
     for (int i = 0; i < MAX_BOARD; i++) {
         if (g->board[i] != EMPTY) continue;
+        if (is_double_three(g, i, player)) continue;  // AJOUT
         int score = evaluate_move_with_captures_full(g, i, player);
         if (score >= WIN_SCORE) return i;
     }

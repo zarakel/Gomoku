@@ -1,38 +1,12 @@
 #include "../include/gomoku.h"
 #include <limits.h>
 
-// --- Fonction de vérification manuelle (Anti-Zombie) ---
-static bool check_real_win(game *g, int player) {
-    // Scan horizontal, vertical, diagonal
-    for (int y = 0; y < BOARD_SIZE; y++) {
-        for (int x = 0; x < BOARD_SIZE; x++) {
-            int idx = y * BOARD_SIZE + x;
-            if (g->board[idx] != player) continue;
-
-            int dirs[4][2] = {{1,0}, {0,1}, {1,1}, {1,-1}};
-            for (int d = 0; d < 4; d++) {
-                int count = 1;
-                for (int k = 1; k < 5; k++) {
-                    int nx = x + dirs[d][0] * k;
-                    int ny = y + dirs[d][1] * k;
-                    if (nx < 0 || nx >= BOARD_SIZE || ny < 0 || ny >= BOARD_SIZE) break;
-                    if (g->board[ny * BOARD_SIZE + nx] == player) count++;
-                    else break;
-                }
-                if (count >= 5) return true;
-            }
-        }
-    }
-    if (g->captures[player] >= 5) return true;
-    return false;
-}
-
 /* Exécute la recherche pour une profondeur donnée avec Aspiration Window */
 static int run_aspiration_search(game *g, int depth, int prev_score, int *best_move_out, int ia_player, clock_t start) {
     // CORRECTION : Utiliser des bornes plus sûres
     int alpha = -WIN_SCORE - 10000;
     int beta = WIN_SCORE + 10000;
-    int window = 500;
+    int window = 5000;
     
     // Initialisation de la fenêtre étroite
     if (depth > 2) {

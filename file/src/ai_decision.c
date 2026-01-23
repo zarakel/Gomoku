@@ -1,120 +1,182 @@
 #include "../include/gomoku.h"
 
 /*
- * ai_decision.c - Module de décision tactique UNIFIÉ
+ * ai_decision.c - Module de décision simplifié
  * 
- * Utilise le système unifié de scan des menaces (ai_unified.c)
- * Fallback vers TSS et Minimax si nécessaire
+ * ARCHITECTURE MINIMAX-FIRST :
+ * Seules les urgences absolues (victoire/défaite immédiate) court-circuitent le Minimax.
+ * Tout le reste est délégué au Minimax qui a une vue à plusieurs coups d'avance.
  */
 
-#define TSS_OFFENSIVE_BUDGET  50
+/* ============================================================================
+ * DÉTECTION VICTOIRE IMMÉDIATE (ALIGNEMENT)
+ * ============================================================================ */
+
+static int find_winning_alignment(game *g, int player) {
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] != EMPTY) continue;
+        if (is_double_three(g, i, player)) continue;
+        
+        g->board[i] = player;
+        int score = get_point_score(g, GET_X(i), GET_Y(i), player);
+        g->board[i] = EMPTY;
+        
+        if (score >= WIN_SCORE) return i;
+    }
+    return -1;
+}
 
 /* ============================================================================
- * FONCTION PRINCIPALE : DÉCISION TACTIQUE
+ * DÉTECTION VICTOIRE IMMÉDIATE (CAPTURE)
+ * ============================================================================ */
+
+static int find_winning_capture(game *g, int player) {
+    if (g->captures[player] < 4) return -1;  /* Impossible de gagner par capture */
+    
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] != EMPTY) continue;
+        
+        g->board[i] = player;
+        int caps = count_potential_captures(g, GET_X(i), GET_Y(i), player) / 2;
+        g->board[i] = EMPTY;
+        
+        if (g->captures[player] + caps >= 5) return i;
+    }
+    return -1;
+}
+
+/* ============================================================================
+ * DÉTECTION DÉFENSE OBLIGATOIRE
+ * 
+ * Trouve TOUS les coups qui donnent la victoire à l'adversaire.
+ * - Si 1 seul → le bloquer
+ * - Si 2+ → chercher contre-attaque gagnante, sinon bloquer (position perdante)
+ * ============================================================================ */
+
+static int find_mandatory_defense(game *g, int ia_player) {
+    int opponent = (ia_player == P1) ? P2 : P1;
+    
+    int opp_win_moves[16];
+    int opp_win_count = 0;
+    
+    /* 1. Victoires par alignement */
+    for (int i = 0; i < MAX_BOARD && opp_win_count < 16; i++) {
+        if (g->board[i] != EMPTY) continue;
+        
+        g->board[i] = opponent;
+        int score = get_point_score(g, GET_X(i), GET_Y(i), opponent);
+        g->board[i] = EMPTY;
+        
+        if (score >= WIN_SCORE) {
+            opp_win_moves[opp_win_count++] = i;
+        }
+    }
+    
+    /* 2. Victoires par capture */
+    if (g->captures[opponent] >= 4) {
+        for (int i = 0; i < MAX_BOARD && opp_win_count < 16; i++) {
+            if (g->board[i] != EMPTY) continue;
+            
+            /* Vérifier si déjà dans la liste */
+            bool already = false;
+            for (int k = 0; k < opp_win_count; k++) {
+                if (opp_win_moves[k] == i) { already = true; break; }
+            }
+            if (already) continue;
+            
+            g->board[i] = opponent;
+            int caps = count_potential_captures(g, GET_X(i), GET_Y(i), opponent) / 2;
+            g->board[i] = EMPTY;
+            
+            if (g->captures[opponent] + caps >= 5) {
+                opp_win_moves[opp_win_count++] = i;
+            }
+        }
+    }
+    
+    /* Aucune menace immédiate */
+    if (opp_win_count == 0) return -1;
+    
+    /* Une seule menace → la bloquer */
+    if (opp_win_count == 1) {
+        #ifdef DEBUG
+        printf("DEFENSE: Blocage unique en (%d,%d)\n", 
+               GET_X(opp_win_moves[0]), GET_Y(opp_win_moves[0]));
+        #endif
+        return opp_win_moves[0];
+    }
+    
+    /* Plusieurs menaces (double threat adverse) → chercher contre-attaque */
+    #ifdef DEBUG
+    printf("ALERTE: %d cases gagnantes adverses ! Recherche contre-attaque...\n", opp_win_count);
+    #endif
+    
+    /* Peut-on gagner par alignement ? */
+    int my_win = find_winning_alignment(g, ia_player);
+    if (my_win != -1) return my_win;
+    
+    /* Peut-on gagner par capture ? */
+    int my_cap_win = find_winning_capture(g, ia_player);
+    if (my_cap_win != -1) return my_cap_win;
+    
+    /* Position perdante → bloquer une des menaces */
+    #ifdef DEBUG
+    printf("POSITION PERDANTE: blocage en (%d,%d)\n", 
+           GET_X(opp_win_moves[0]), GET_Y(opp_win_moves[0]));
+    #endif
+    return opp_win_moves[0];
+}
+
+/* ============================================================================
+ * FONCTION PRINCIPALE : DÉCISION IA
+ * 
+ * Architecture simple :
+ * 1. Je peux gagner → je gagne
+ * 2. Il peut gagner → je bloque (ou contre-attaque)
+ * 3. Sinon → Minimax décide
  * ============================================================================ */
 
 int make_tactical_decision(game *g, int ia_player, clock_t start_time) {
-    int opponent = (ia_player == P1) ? P2 : P1;
-    int decision = -1;
+    (void)start_time;  /* Non utilisé ici, le temps est géré par le Minimax */
     
-    /* ══════════════════════════════════════════════════════════════════════
-     * PHASE 1 : SCAN UNIFIÉ DES MENACES
-     * ══════════════════════════════════════════════════════════════════════ */
+    /* ═══════════════════════════════════════════════════════════════════
+     * RÈGLE 1 : VICTOIRE IMMÉDIATE
+     * ═══════════════════════════════════════════════════════════════════ */
     
-    UnifiedThreat my_threats[30];
-    int my_count = scan_unified_threats(g, ia_player, my_threats, 30);
+    int win_align = find_winning_alignment(g, ia_player);
+    if (win_align != -1) {
+        #ifdef DEBUG
+        printf("VICTOIRE: Alignement gagnant en (%d,%d)\n", 
+               GET_X(win_align), GET_Y(win_align));
+        #endif
+        return win_align;
+    }
     
-    UnifiedThreat opp_threats[30];
-    int opp_count = scan_unified_opponent_threats(g, ia_player, opp_threats, 30);
+    int win_capture = find_winning_capture(g, ia_player);
+    if (win_capture != -1) {
+        #ifdef DEBUG
+        printf("VICTOIRE: Capture gagnante en (%d,%d)\n", 
+               GET_X(win_capture), GET_Y(win_capture));
+        #endif
+        return win_capture;
+    }
+    
+    /* ═══════════════════════════════════════════════════════════════════
+     * RÈGLE 2 : DÉFENSE OBLIGATOIRE
+     * ═══════════════════════════════════════════════════════════════════ */
+    
+    int defense = find_mandatory_defense(g, ia_player);
+    if (defense != -1) {
+        return defense;
+    }
+    
+    /* ═══════════════════════════════════════════════════════════════════
+     * RÈGLE 3 : MINIMAX DÉCIDE
+     * ═══════════════════════════════════════════════════════════════════ */
     
     #ifdef DEBUG
-    printf("DEBUG UNIFIED: %d menaces IA, %d menaces adverses\n", my_count, opp_count);
-    printf("DEBUG: Adversaire a %d paires\n", g->captures[opponent]);
+    printf("DECISION: Pas d'urgence → Minimax\n");
     #endif
     
-    /* ══════════════════════════════════════════════════════════════════════
-     * PHASE 2 : DÉCISION BASÉE SUR LE SCAN UNIFIÉ
-     * ══════════════════════════════════════════════════════════════════════ */
-    
-    decision = get_best_response(g, ia_player, NULL, 0);
-    if (decision != -1) {
-        #ifdef DEBUG
-        printf("DECISION UNIFIED: Coup en (%d, %d)\n", GET_X(decision), GET_Y(decision));
-        #endif
-        return decision;
-    }
-    
-    /* ══════════════════════════════════════════════════════════════════════
-     * PHASE 3 : DÉTECTIONS SPÉCIALES (captures qui créent des menaces)
-     * ══════════════════════════════════════════════════════════════════════ */
-    
-    /* Captures adverses qui connectent des segments */
-    int capture_connects = detect_capture_connects_segments(g, ia_player);
-    if (capture_connects != -1) {
-        #ifdef DEBUG
-        printf("DECISION: Blocage capture qui connecte segments en (%d, %d)\n", 
-               GET_X(capture_connects), GET_Y(capture_connects));
-        #endif
-        return capture_connects;
-    }
-    
-    /* Double CLOSED_FOUR créé par capture */
-    int capture_double = detect_capture_creates_double_closed_four(g, ia_player);
-    if (capture_double != -1) {
-        #ifdef DEBUG
-        printf("DECISION: Blocage capture double menace en (%d, %d)\n",
-               GET_X(capture_double), GET_Y(capture_double));
-        #endif
-        return capture_double;
-    }
-    
-    /* ══════════════════════════════════════════════════════════════════════
-     * PHASE 4 : TSS OFFENSIF
-     * ══════════════════════════════════════════════════════════════════════ */
-    
-    decision = tss_find_winning_sequence(g, ia_player, start_time, TSS_OFFENSIVE_BUDGET);
-    if (decision != -1) {
-        #ifdef DEBUG
-        printf("DECISION: TSS trouve séquence gagnante en (%d, %d)\n", 
-               GET_X(decision), GET_Y(decision));
-        #endif
-        return decision;
-    }
-    
-    /* ══════════════════════════════════════════════════════════════════════
-     * PHASE 5 : CAPTURES OFFENSIVES/DÉFENSIVES
-     * ══════════════════════════════════════════════════════════════════════ */
-    
-    /* Capture défensive si l'adversaire a 3+ paires */
-    if (g->captures[opponent] >= 3) {
-        int block_capture = find_critical_capture_block(g, ia_player);
-        if (block_capture != -1) {
-            #ifdef DEBUG
-            printf("DECISION: Blocage capture (3+ paires) en (%d, %d)\n",
-                   GET_X(block_capture), GET_Y(block_capture));
-            #endif
-            return block_capture;
-        }
-    }
-    
-    /* Capture offensive si on a 3+ paires et pas de menace adverse */
-    if (g->captures[ia_player] >= 3 && opp_count == 0) {
-        int capture = find_best_capture_move(g, ia_player);
-        if (capture != -1) {
-            #ifdef DEBUG
-            printf("DECISION: Capture offensive en (%d, %d)\n", GET_X(capture), GET_Y(capture));
-            #endif
-            return capture;
-        }
-    }
-    
-    /* ══════════════════════════════════════════════════════════════════════
-     * AUCUNE DÉCISION TACTIQUE → MINIMAX
-     * ══════════════════════════════════════════════════════════════════════ */
-    
-    #ifdef DEBUG
-    printf("DECISION: Aucune urgence tactique, passage au Minimax\n");
-    #endif
-    
-    return -1;
+    return -1;  /* Signal pour passer au Minimax */
 }

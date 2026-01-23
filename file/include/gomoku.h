@@ -242,8 +242,8 @@ int     detect_convergent_threats(game *g, int player, int *critical_moves, int 
 
 // ai_captures.c
 int     compute_unified_threat_level(game *g, int player);
-int     find_best_capture_move(game *g, int player);
-int     find_critical_capture_block(game *g, int player);
+int     evaluate_defensive_capture_value(game *g, int capture_idx, int ia_player);
+int     compute_capture_danger(game *g, int opponent, int *best_idx);
 
 // ai_tactics.c
 int     find_winning_move(game *g, int player);
@@ -323,10 +323,27 @@ int scan_dangerous_opponent_captures(game *g, int player, UnifiedThreat *threats
 int compare_unified_threats(const void *a, const void *b);
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * AI MULTI-THREAT DETECTION (ai_multi_threat.c)
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * AI MULTI-THREAT FUNCTIONS
+ * ════════════════════════════════════════════════════════════════════════════ */
 
 int analyze_multi_threats(game *g, int ia_player);
 bool should_block_instead_of_develop(game *g, int ia_player);
+int compute_junction_potential(game *g, int idx, int player);
+int find_preemptive_block(game *g, int ia_player);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * AI CAPTURES FUNCTIONS
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+int compute_unified_threat_level(game *g, int player);
+int find_best_capture_move(game *g, int player);
+int find_critical_capture_block(game *g, int player);
+int evaluate_defensive_capture_value(game *g, int capture_idx, int ia_player);
+int compute_capture_danger(game *g, int opponent, int *best_idx);
+
+// Ajouter une constante si elle n'existe pas
+#ifndef MAX_STONES_IN_FORMATION
+#define MAX_STONES_IN_FORMATION 10
+#endif
 
 #endif
