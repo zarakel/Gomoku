@@ -31,7 +31,7 @@ static int quiescence_search(game *g, int alpha, int beta, int ia_player, int qs
         g->board[idx] = EMPTY;
         
         // Ignorer les coups calmes
-        if (attack < CLOSED_FOUR && defense < CLOSED_FOUR) continue;
+        if (attack < OPEN_THREE && defense < OPEN_THREE) continue;
         
         // Jouer le coup bruyant
         MoveUndo undo;

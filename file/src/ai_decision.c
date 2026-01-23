@@ -216,78 +216,78 @@ static int find_mandatory_defense(game *g, int ia_player) {
      * NOUVEAU : Détection des menaces critiques (OPEN_FOUR, CLOSED_FOUR)
      * ═══════════════════════════════════════════════════════════════════ */
     
-    /* 4. OPEN_FOUR adverse = victoire au prochain coup si non bloqué */
-    if (opp_best_threat >= OPEN_FOUR) {
-        #ifdef DEBUG
-        printf("ALERTE CRITIQUE: OPEN_FOUR adverse détecté (score=%d) !\n", opp_best_threat);
-        #endif
+    // /* 4. OPEN_FOUR adverse = victoire au prochain coup si non bloqué */
+    // if (opp_best_threat >= OPEN_FOUR) {
+    //     #ifdef DEBUG
+    //     printf("ALERTE CRITIQUE: OPEN_FOUR adverse détecté (score=%d) !\n", opp_best_threat);
+    //     #endif
         
-        // Peut-on gagner immédiatement ?
-        int my_win = find_winning_alignment(g, ia_player);
-        if (my_win != -1) return my_win;
+    //     // Peut-on gagner immédiatement ?
+    //     int my_win = find_winning_alignment(g, ia_player);
+    //     if (my_win != -1) return my_win;
         
-        int my_cap_win = find_winning_capture(g, ia_player);
-        if (my_cap_win != -1) return my_cap_win;
+    //     int my_cap_win = find_winning_capture(g, ia_player);
+    //     if (my_cap_win != -1) return my_cap_win;
         
-        // Sinon, bloquer la menace
-        int block = find_critical_block(g, opponent, opp_best_threat);
-        if (block != -1) {
-            #ifdef DEBUG
-            printf("BLOCAGE OPEN_FOUR en (%d,%d)\n", GET_X(block), GET_Y(block));
-            #endif
-            return block;
-        }
+    //     // Sinon, bloquer la menace
+    //     int block = find_critical_block(g, opponent, opp_best_threat);
+    //     if (block != -1) {
+    //         #ifdef DEBUG
+    //         printf("BLOCAGE OPEN_FOUR en (%d,%d)\n", GET_X(block), GET_Y(block));
+    //         #endif
+    //         return block;
+    //     }
         
-        // Fallback : bloquer directement la case menaçante
-        return opp_best_threat_idx;
-    }
+    //     // Fallback : bloquer directement la case menaçante
+    //     return opp_best_threat_idx;
+    // }
     
-    /* 5. CLOSED_FOUR adverse = DOIT être bloqué (4 pierres !) */
-    if (opp_best_threat >= CLOSED_FOUR) {
-        #ifdef DEBUG
-        printf("ALERTE: CLOSED_FOUR adverse détecté (score=%d)\n", opp_best_threat);
-        #endif
+    // /* 5. CLOSED_FOUR adverse = DOIT être bloqué (4 pierres !) */
+    // if (opp_best_threat >= CLOSED_FOUR) {
+    //     #ifdef DEBUG
+    //     printf("ALERTE: CLOSED_FOUR adverse détecté (score=%d)\n", opp_best_threat);
+    //     #endif
         
-        // Un CLOSED_FOUR avec 4 pierres = victoire adverse si non bloqué !
-        // Peut-on créer une menace SUPÉRIEURE (OPEN_FOUR ou WIN) ?
-        int my_best_threat = 0;
-        int my_best_idx = -1;
-        for (int i = 0; i < MAX_BOARD; i++) {
-            if (g->board[i] != EMPTY) continue;
-            if (is_double_three(g, i, ia_player)) continue;
+    //     // Un CLOSED_FOUR avec 4 pierres = victoire adverse si non bloqué !
+    //     // Peut-on créer une menace SUPÉRIEURE (OPEN_FOUR ou WIN) ?
+    //     int my_best_threat = 0;
+    //     int my_best_idx = -1;
+    //     for (int i = 0; i < MAX_BOARD; i++) {
+    //         if (g->board[i] != EMPTY) continue;
+    //         if (is_double_three(g, i, ia_player)) continue;
             
-            g->board[i] = ia_player;
-            int score = get_point_score(g, GET_X(i), GET_Y(i), ia_player);
-            g->board[i] = EMPTY;
+    //         g->board[i] = ia_player;
+    //         int score = get_point_score(g, GET_X(i), GET_Y(i), ia_player);
+    //         g->board[i] = EMPTY;
             
-            if (score > my_best_threat) {
-                my_best_threat = score;
-                my_best_idx = i;
-            }
-        }
+    //         if (score > my_best_threat) {
+    //             my_best_threat = score;
+    //             my_best_idx = i;
+    //         }
+    //     }
         
-        // Si on peut créer un OPEN_FOUR ou gagner, on attaque
-        if (my_best_threat >= OPEN_FOUR) {
-            #ifdef DEBUG
-            printf("CONTRE-ATTAQUE: Notre OPEN_FOUR (%d) > leur CLOSED_FOUR\n", my_best_threat);
-            #endif
-            return my_best_idx;  // Jouer notre attaque supérieure
-        }
+    //     // Si on peut créer un OPEN_FOUR ou gagner, on attaque
+    //     if (my_best_threat >= OPEN_FOUR) {
+    //         #ifdef DEBUG
+    //         printf("CONTRE-ATTAQUE: Notre OPEN_FOUR (%d) > leur CLOSED_FOUR\n", my_best_threat);
+    //         #endif
+    //         return my_best_idx;  // Jouer notre attaque supérieure
+    //     }
         
-        // Sinon, BLOQUER OBLIGATOIREMENT
-        int block = find_critical_block(g, opponent, opp_best_threat);
-        if (block != -1) {
-            #ifdef DEBUG
-            printf("BLOCAGE CLOSED_FOUR en (%d,%d)\n", GET_X(block), GET_Y(block));
-            #endif
-            return block;
-        }
+    //     // Sinon, BLOQUER OBLIGATOIREMENT
+    //     int block = find_critical_block(g, opponent, opp_best_threat);
+    //     if (block != -1) {
+    //         #ifdef DEBUG
+    //         printf("BLOCAGE CLOSED_FOUR en (%d,%d)\n", GET_X(block), GET_Y(block));
+    //         #endif
+    //         return block;
+    //     }
         
-        // Fallback : bloquer la case menaçante directement
-        if (opp_best_threat_idx != -1) {
-            return opp_best_threat_idx;
-        }
-    }
+    //     // Fallback : bloquer la case menaçante directement
+    //     if (opp_best_threat_idx != -1) {
+    //         return opp_best_threat_idx;
+    //     }
+    // }
     
     /* ═══════════════════════════════════════════════════════════════════
      * NOUVEAU : Course à la victoire

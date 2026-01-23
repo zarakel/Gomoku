@@ -95,7 +95,7 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
     bool empty_board = true;
 
-    // Bounding Box
+    // 1. Calcul de la Bounding Box stricte
     for (int i = 0; i < MAX_BOARD; i++) {
         if (g->board[i] != EMPTY) {
             empty_board = false;
@@ -111,32 +111,63 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         return 1;
     }
 
+    // 2. Élargissement des bornes (CORRECTION : On le fait AVANT le pruning)
+    // Cela assure qu'on cherche les défenses même un peu à l'extérieur du jeu actuel
     min_x = (min_x - 2 < 0) ? 0 : min_x - 2;
     max_x = (max_x + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_x + 2;
     min_y = (min_y - 2 < 0) ? 0 : min_y - 2;
     max_y = (max_y + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_y + 2;
 
-    // --- PREMIÈRE PASSE : Trouver le meilleur coup DÉFENSIF ---
-    int best_defensive_idx = -1;
-    int best_defensive_score = 0;
+    // --- PRUNING DÉFENSIF AGRESSIF & VICTOIRE IMMÉDIATE ---
+    int urgent_move_count = 0;
+    int winning_move_index = -1;
 
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
             int i = GET_INDEX(x, y);
             if (g->board[i] != EMPTY) continue;
-            if (!has_neighbors(g, i)) continue;
+            if (!has_neighbors(g, i)) continue; 
 
-            int tactical = quick_evaluate_move(g, i, player);
-            
-            // Coup défensif critique ? (>= 1800000000 = bloque CLOSED_FOUR ou mieux)
-            if (tactical >= 1800000000 && tactical > best_defensive_score) {
-                best_defensive_score = tactical;
-                best_defensive_idx = i;
+            // A. Vérifier SI JE GAGNE (Priorité absolue)
+            // On utilise quick_evaluate_move ou get_point_score pour nous-même
+            g->board[i] = player;
+            int my_score = get_point_score(g, x, y, player);
+            g->board[i] = EMPTY;
+
+            if (my_score >= WIN_SCORE) {
+                // On a trouvé une victoire, on arrête tout et on renvoie ce coup
+                moves[0].index = i;
+                moves[0].score_estim = 2000000000; // Infini
+                return 1; 
+            }
+
+            // B. Vérifier les MENACES MORTELLES adverses (OPEN_FOUR)
+            g->board[i] = (player == P1) ? P2 : P1; // Simuler l'adversaire
+            int opp_threat = get_point_score(g, x, y, (player == P1) ? P2 : P1);
+            g->board[i] = EMPTY;
+
+            // Si l'adversaire a un OPEN_FOUR (ou mieux), on DOIT bloquer
+            if (opp_threat >= OPEN_FOUR) {
+                moves[urgent_move_count].index = i;
+                // On donne un score très élevé mais inférieur à une victoire certaine
+                moves[urgent_move_count].score_estim = 1900000000 + opp_threat; 
+                urgent_move_count++;
             }
         }
     }
 
-    // --- DEUXIÈME PASSE : Générer tous les coups ---
+    // Si on a trouvé des coups urgents (et pas de victoire immédiate vue plus haut),
+    // on ne renvoie QUE ces coups de défense.
+    if (urgent_move_count > 0) {
+        return urgent_move_count;
+    }
+
+    // --- Suite standard (si pas d'urgence) ---
+
+    // Note : Tu peux garder ta "PREMIÈRE PASSE" ou la fusionner, 
+    // mais le code ci-dessus a déjà filtré les urgences absolues.
+    // La suite de ton code génère les coups normaux.
+
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
             int i = GET_INDEX(x, y);
@@ -157,43 +188,22 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
             count++;
         }
     }
-
-    // --- CUTOFF INTELLIGENT ---
-    // Ne couper que si on a une victoire immédiate (WIN) ou si on doit bloquer une victoire adverse
-    if (best_defensive_score >= 1950000000) { // Bloque un WIN adverse
-        if (!is_double_three(g, best_defensive_idx, player)) {
-        moves[0].index = best_defensive_idx;
-        moves[0].score_estim = best_defensive_score;
-        return 1;
-        }
-    }
-
-    qsort(moves, count, sizeof(MoveCandidate), compare_moves);
     
-    // Si le meilleur coup est une victoire (>= 2000000000), on ne garde que lui
-    if (count > 0 && moves[0].score_estim >= 2000000000) {
-        return 1;
-    }
+    // Le tri et le beam search restent identiques...
+    qsort(moves, count, sizeof(MoveCandidate), compare_moves);
     
     if (disable_pruning) return count;
 
-    // Beam Search Adaptatif - PLUS LARGE
     int beam_width;
     bool defensive_situation = (count > 0 && moves[0].score_estim >= 1700000000);
     
-    if (defensive_situation) {
-        beam_width = 25;  // Était 16, augmenté pour ne pas rater de blocages
-    } else if (depth >= 8) {
-        beam_width = 10;
-    } else if (depth >= 6) {
-        beam_width = 15;
-    } else {
-        beam_width = 20;
-    }
+    if (defensive_situation) beam_width = 25;
+    else if (depth >= 8) beam_width = 10;
+    else if (depth >= 6) beam_width = 15;
+    else beam_width = 20;
 
     int final_count = 0;
     for (int i = 0; i < count; i++) {
-        // Garder tous les coups tactiques (>= CLOSED_THREE défense/attaque)
         if (i < beam_width || moves[i].score_estim >= 1550000000) {
             final_count++;
         } else {
@@ -201,7 +211,6 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         }
     }
     
-    // Garantir un minimum de coups
     if (final_count < 5 && count >= 5) final_count = 5;
     
     return final_count;
