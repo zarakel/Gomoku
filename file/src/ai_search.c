@@ -1,8 +1,55 @@
 #include "../include/gomoku.h"
 #include <limits.h>
 
+/* ============================================================================
+ * NOUVELLE FONCTION : Quiescence Search
+ * Continue la recherche tant qu'il y a des coups "bruyants" (menaces critiques)
+ * ============================================================================ */
+
+static int quiescence_search(game *g, int alpha, int beta, int ia_player, int qs_depth) {
+    // Limite de profondeur pour éviter l'explosion
+    if (qs_depth <= 0) return evaluate_board(g, ia_player);
+    
+    int stand_pat = evaluate_board(g, ia_player);
+    
+    if (stand_pat >= beta) return beta;
+    if (alpha < stand_pat) alpha = stand_pat;
+    
+    int opponent = (ia_player == P1) ? P2 : P1;
+    
+    // Chercher uniquement les coups "bruyants" (CLOSED_FOUR ou mieux)
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != EMPTY) continue;
+        
+        // Évaluer si ce coup est "bruyant"
+        g->board[idx] = ia_player;
+        int attack = get_point_score(g, GET_X(idx), GET_Y(idx), ia_player);
+        g->board[idx] = EMPTY;
+        
+        g->board[idx] = opponent;
+        int defense = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
+        g->board[idx] = EMPTY;
+        
+        // Ignorer les coups calmes
+        if (attack < CLOSED_FOUR && defense < CLOSED_FOUR) continue;
+        
+        // Jouer le coup bruyant
+        MoveUndo undo;
+        apply_move(g, idx, ia_player, &undo);
+        
+        int score = -quiescence_search(g, -beta, -alpha, opponent, qs_depth - 1);
+        
+        undo_move(g, ia_player, &undo);
+        
+        if (score >= beta) return beta;
+        if (score > alpha) alpha = score;
+    }
+    
+    return alpha;
+}
+
 // ============================================================================
-// MINIMAX (SEULE FONCTION RESTANTE)
+// MINIMAX AMÉLIORÉ
 // ============================================================================
 
 int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time) {
@@ -28,7 +75,10 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
     int current_eval = evaluate_board(g, ia_player);
     if (abs(current_eval) >= WIN_SCORE / 2) return current_eval;
 
-    if (depth <= 0) return current_eval;
+    // NOUVEAU : À profondeur 0, faire une recherche de quiescence
+    if (depth <= 0) {
+        return quiescence_search(g, alpha, beta, ia_player, 4);  // 4 plies de quiescence
+    }
 
     MoveCandidate moves[MAX_BOARD];
     int tt_move = (entry != NULL) ? entry->best_move : -1; 

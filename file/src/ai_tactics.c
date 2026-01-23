@@ -10,43 +10,6 @@
  */
 
 /* ============================================================================
- * RECHERCHE D'UN COUP GAGNANT
- * Retourne la case qui donne WIN_SCORE immédiatement
- * ============================================================================ */
-
- int find_winning_move(game *g, int player) {
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) continue;
-        if (is_double_three(g, i, player)) continue;  // AJOUT
-        int score = evaluate_move_with_captures_full(g, i, player);
-        if (score >= WIN_SCORE) return i;
-    }
-    return -1;
-}
-
-/*
- * NOUVELLE FONCTION : Compte les coups gagnants immédiats d'un joueur
- * Si >= 2, c'est une double menace imparable
- */
-int count_winning_moves(game *g, int player, int *first_win, int *second_win) {
-    int count = 0;
-    *first_win = -1;
-    *second_win = -1;
-    
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) continue;
-        int score = evaluate_move_with_captures_full(g, i, player);
-        if (score >= WIN_SCORE) {
-            if (count == 0) *first_win = i;
-            else if (count == 1) *second_win = i;
-            count++;
-            if (count >= 2) return count; // Early exit
-        }
-    }
-    return count;
-}
-
-/* ============================================================================
  * RECHERCHE DES CASES DE BLOCAGE POUR UNE LIGNE
  * Retourne les extrémités vides des alignements de 3+ pierres
  * ============================================================================ */
@@ -208,62 +171,4 @@ int find_blocking_move(game *g, int threat_player) {
     }
     
     return -1;
-}
-
-/* ============================================================================
- * RECHERCHE D'UN COUP MIXTE (ATTAQUE + DÉFENSE)
- * Trouve un coup qui attaque tout en bloquant une menace adverse
- * 
- * Note: Cette fonction sera intégrée dans le TSS en Phase 3
- * ============================================================================ */
-
-int find_best_dual_purpose_move(game *g, int ia_player, int opponent) {
-    int best_move = -1;
-    int best_score = 0;
-    
-    /* Trouver les cases de blocage des menaces adverses */
-    int blocking_candidates[20];
-    int block_count = find_line_blocking_moves(g, opponent, blocking_candidates, 20);
-    
-    for (int i = 0; i < block_count; i++) {
-        int idx = blocking_candidates[i];
-        if (g->board[idx] != EMPTY) continue;
-        
-        /* Évaluer notre propre attaque depuis cette case */
-        int our_attack = evaluate_move_with_captures_full(g, idx, ia_player);
-        
-        /* Évaluer la menace qu'on bloque */
-        int their_threat = evaluate_move_with_captures_full(g, idx, opponent);
-        
-        /* Score combiné : attaque + défense */
-        int combined = our_attack + (their_threat / 2);
-        
-        /* Bonus si notre attaque est forte */
-        if (our_attack >= OPEN_THREE) combined += OPEN_THREE;
-        if (our_attack >= CLOSED_FOUR) combined += CLOSED_FOUR;
-        
-        if (combined > best_score) {
-            best_score = combined;
-            best_move = idx;
-        }
-    }
-    
-    /* Chercher aussi dans les cases adjacentes aux pierres IA */
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
-        
-        int our_attack = evaluate_move_with_captures_full(g, idx, ia_player);
-        int their_threat = evaluate_move_with_captures_full(g, idx, opponent);
-        
-        /* On veut un coup qui est bon pour nous ET qui gêne l'adversaire */
-        if (our_attack >= CLOSED_THREE && their_threat >= CLOSED_THREE) {
-            int combined = our_attack + their_threat;
-            if (combined > best_score) {
-                best_score = combined;
-                best_move = idx;
-            }
-        }
-    }
-    
-    return best_move;
 }

@@ -161,9 +161,11 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     // --- CUTOFF INTELLIGENT ---
     // Ne couper que si on a une victoire immédiate (WIN) ou si on doit bloquer une victoire adverse
     if (best_defensive_score >= 1950000000) { // Bloque un WIN adverse
+        if (!is_double_three(g, best_defensive_idx, player)) {
         moves[0].index = best_defensive_idx;
         moves[0].score_estim = best_defensive_score;
         return 1;
+        }
     }
 
     qsort(moves, count, sizeof(MoveCandidate), compare_moves);

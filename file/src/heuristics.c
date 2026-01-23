@@ -613,11 +613,88 @@ int evaluate_board(game *g, int player) {
         #endif
     }
 
-    // 7. Clamp
-    if (final_score > WIN_SCORE - 1) final_score = WIN_SCORE - 1;
-    if (final_score < -WIN_SCORE + 1) final_score = -WIN_SCORE + 1;
+    // NOUVEAU : Pénalité exponentielle pour menaces adverses non contrées
+    if (opp_max_threat >= OPEN_THREE) {
+        // Vérifier si on peut bloquer
+        bool can_block = false;
+        for (int i = 0; i < MAX_BOARD && !can_block; i++) {
+            if (g->board[i] != EMPTY) continue;
+            g->board[i] = player;
+            int new_opp_threat = 0;
+            // Recalculer menace adverse après notre coup
+            for (int j = 0; j < MAX_BOARD; j++) {
+                if (g->board[j] != EMPTY) continue;
+                g->board[j] = opponent;
+                int s = get_point_score(g, GET_X(j), GET_Y(j), opponent);
+                if (s > new_opp_threat) new_opp_threat = s;
+                g->board[j] = EMPTY;
+            }
+            g->board[i] = EMPTY;
+            if (new_opp_threat < opp_max_threat) can_block = true;
+        }
+        
+        if (!can_block) {
+            // Menace imparable → score catastrophique
+            final_score -= opp_max_threat * 10;
+        }
+    }
 
-    return (int)final_score;
+    /* ═══════════════════════════════════════════════════════════════════
+     * NOUVEAU : Pénalité pour course à la victoire défavorable
+     * Si l'adversaire a une menace critique et qu'on ne peut pas gagner avant
+     * ═══════════════════════════════════════════════════════════════════ */
+    
+    // Calculer les meilleures menaces de chaque joueur
+    int my_best_single_threat = 0;
+    int opp_best_single_threat = 0;
+    
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != EMPTY) continue;
+        
+        // Menace joueur
+        g->board[idx] = player;
+        int my_threat = get_point_score(g, GET_X(idx), GET_Y(idx), player);
+        g->board[idx] = EMPTY;
+        if (my_threat > my_best_single_threat) my_best_single_threat = my_threat;
+        
+        // Menace adversaire
+        g->board[idx] = opponent;
+        int opp_threat = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
+        g->board[idx] = EMPTY;
+        if (opp_threat > opp_best_single_threat) opp_best_single_threat = opp_threat;
+    }
+    
+    /* Pénalité si l'adversaire a une menace supérieure ou égale */
+    if (opp_best_single_threat >= OPEN_THREE) {
+        // L'adversaire a au moins un OPEN_THREE
+        
+        if (my_best_single_threat < opp_best_single_threat) {
+            // Notre meilleure menace est inférieure → DANGER
+            int threat_gap = opp_best_single_threat - my_best_single_threat;
+            final_score -= threat_gap;  // Pénalité proportionnelle
+            
+            #ifdef DEBUG
+            printf("EVAL PENALTY: Opp threat %d > My threat %d, penalty=%d\n",
+                   opp_best_single_threat, my_best_single_threat, threat_gap);
+            #endif
+        }
+        
+        // Pénalité supplémentaire si OPEN_FOUR adverse non contré
+        if (opp_best_single_threat >= OPEN_FOUR && my_best_single_threat < OPEN_FOUR) {
+            final_score -= OPEN_FOUR;  // Pénalité massive
+            #ifdef DEBUG
+            printf("EVAL CRITICAL: Uncontested OPEN_FOUR! Penalty=%d\n", OPEN_FOUR);
+            #endif
+        }
+    }
+    
+    /* Bonus si on domine la course */
+    if (my_best_single_threat >= OPEN_THREE && my_best_single_threat > opp_best_single_threat) {
+        int dominance_bonus = (my_best_single_threat - opp_best_single_threat) / 2;
+        final_score += dominance_bonus;
+    }
+
+    return final_score;
 }
 
 /* 

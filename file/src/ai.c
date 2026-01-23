@@ -6,7 +6,7 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
     // CORRECTION : Utiliser des bornes plus sûres
     int alpha = -WIN_SCORE - 10000;
     int beta = WIN_SCORE + 10000;
-    int window = 5000;
+    int window = 500;
     
     // Initialisation de la fenêtre étroite
     if (depth > 2) {
