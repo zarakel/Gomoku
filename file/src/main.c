@@ -47,10 +47,12 @@ bool initialized(void *args, screen *windows, game *gameData)
     gameData->ia_timer.start_ts.tv_sec = 0;
     gameData->ia_timer.start_ts.tv_nsec = 0;
 
+    gameData->winner = 0; // Aucun gagnant au départ
+
     gameData->score[0] = 0; // Unused
     gameData->score[P1] = 0;
     gameData->score[P2] = 0;
-    
+
     gameData->pos_score[0] = 0;
     gameData->pos_score[P1] = 0;
     gameData->pos_score[P2] = 0;
