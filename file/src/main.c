@@ -50,6 +50,14 @@ bool initialized(void *args, screen *windows, game *gameData)
     gameData->score[0] = 0; // Unused
     gameData->score[P1] = 0;
     gameData->score[P2] = 0;
+    
+    gameData->pos_score[0] = 0;
+    gameData->pos_score[P1] = 0;
+    gameData->pos_score[P2] = 0;
+
+    memset(gameData->pos_score, 0, sizeof(gameData->pos_score));
+    memset(gameData->threat_counts, 0, sizeof(gameData->threat_counts));
+    memset(gameData->max_threat_level, 0, sizeof(gameData->max_threat_level));
 
     gameData->current_hash = 0;
 

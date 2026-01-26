@@ -172,3 +172,78 @@ int find_blocking_move(game *g, int threat_player) {
     
     return -1;
 }
+
+/* ============================================================================
+ * SOLVEUR VCF (Victory by Continuous Four/Three) - VERSION DÉFENSIVE
+ * Vérifie si 'attacker' peut gagner par une série de coups forcés.
+ * ============================================================================ */
+static inline int check_timeout_vcf(clock_t start_time) {
+    if ((clock() - start_time) * 1000 / CLOCKS_PER_SEC >= TIME_LIMIT_MS - 20) {
+        return 1;
+    }
+    return 0;
+}
+
+bool check_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time) {
+    // 1. Limites (Profondeur & Temps)
+    if (depth >= max_depth) return false;
+    if ((depth & 3) == 0 && check_timeout_vcf(start_time)) return false; 
+
+    int defender = (attacker == P1) ? P2 : P1;
+
+    // 2. Générer les coups d'attaque
+    // On utilise generate_moves pour avoir les scores et le tri
+    MoveCandidate moves[MAX_BOARD];
+    int count = generate_moves(g, moves, attacker, -1, -1);
+    
+    // 3. Boucle sur les attaques
+    for (int i = 0; i < count; i++) {
+        // OPTIMISATION CRITIQUE :
+        // On ne regarde QUE les coups qui forcent une réponse (Open 3 ou mieux)
+        // Inutile de tester des coups "mous" dans un VCF.
+        if (moves[i].score_estim < OPEN_THREE) break; // Les coups sont triés, on peut break
+
+        int idx = moves[i].index;
+        MoveUndo undo;
+        apply_move(g, idx, attacker, &undo);
+        
+        // A. Vérifier la victoire immédiate
+        // (On utilise une eval rapide ou complète)
+        if (evaluate_board(g, attacker) >= WIN_SCORE) {
+            undo_move(g, attacker, &undo);
+            return true;
+        }
+
+        // B. Le défenseur doit répondre
+        // On suppose que le défenseur joue son MEILLEUR coup de blocage.
+        // Si l'attaque passe même contre le meilleur blocage, elle est valide.
+        int best_block = find_blocking_move(g, attacker);
+        
+        if (best_block == -1) {
+            // Pas de blocage trouvé ? 
+            // Soit l'attaque est imparable (Open 4), soit elle n'était pas grave.
+            // Si c'était un Open 4 (score très haut), c'est une victoire.
+            if (moves[i].score_estim >= OPEN_FOUR) {
+                undo_move(g, attacker, &undo);
+                return true;
+            }
+            // Sinon (Open 3 sans blocage évident, ou faux positif), on continue
+            undo_move(g, attacker, &undo);
+            continue; 
+        }
+
+        // C. Simuler la défense
+        MoveUndo undo_def;
+        apply_move(g, best_block, defender, &undo_def);
+        
+        // D. Récursion
+        bool won = check_vcf_win(g, attacker, depth + 1, max_depth, start_time);
+        
+        undo_move(g, defender, &undo_def);
+        undo_move(g, attacker, &undo);
+        
+        if (won) return true;
+    }
+
+    return false;
+}

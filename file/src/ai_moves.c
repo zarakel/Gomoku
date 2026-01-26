@@ -1,217 +1,224 @@
 #include "../include/gomoku.h"
-
-static bool has_neighbors(game *g, int idx) {
-    int cx = GET_X(idx);
-    int cy = GET_Y(idx);
-    int radius = 2;
-    for (int y = cy - radius; y <= cy + radius; y++) {
-        for (int x = cx - radius; x <= cx + radius; x++) {
-            if (!IS_VALID(x, y)) continue;
-            if (g->board[GET_INDEX(x, y)] != EMPTY) return true;
-        }
-    }
-    return false;
-}
+#include <stdlib.h>
 
 static int compare_moves(const void *a, const void *b) {
-    return ((MoveCandidate *)b)->score_estim - ((MoveCandidate *)a)->score_estim;
+    // Tri décroissant
+    if (((MoveCandidate *)b)->score_estim > ((MoveCandidate *)a)->score_estim) return 1;
+    if (((MoveCandidate *)b)->score_estim < ((MoveCandidate *)a)->score_estim) return -1;
+    return 0;
 }
 
-/*
- * AMÉLIORATION : Évaluation rapide pour le tri des coups
- * Priorise les coups tactiquement intéressants pour un meilleur pruning
- */
-int quick_evaluate_move(game *g, int idx, int player) {
-    int opponent = (player == P1) ? P2 : P1;
+// Vérifie si le coup est suicidaire (inchangé)
+static bool is_move_suicidal(game *g, int idx, int player) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
+    int opponent = (player == P1) ? P2 : P1;
+    int dx[] = {1, 0, 1, 1};
+    int dy[] = {0, 1, 1, -1};
 
-    /* Évaluation offensive */
     g->board[idx] = player;
-    int attack_score = get_point_score(g, x, y, player);
-    int my_captures = count_potential_captures(g, x, y, player);
-    g->board[idx] = EMPTY;
+    bool suicidal = false;
 
-    /* Évaluation défensive */
-    g->board[idx] = opponent;
-    int defense_score = get_point_score(g, x, y, opponent);
-    int opp_captures = count_potential_captures(g, x, y, opponent);
-    g->board[idx] = EMPTY;
+    for (int i = 0; i < 4; i++) {
+        for (int sign = -1; sign <= 1; sign += 2) {
+            int dir_x = dx[i] * sign;
+            int dir_y = dy[i] * sign;
+            int n1_x = x + dir_x;
+            int n1_y = y + dir_y;
+            
+            if (IS_VALID(n1_x, n1_y) && g->board[GET_INDEX(n1_x, n1_y)] == player) {
+                int opp_x = x - dir_x;
+                int opp_y = y - dir_y;
+                int far_x = n1_x + dir_x;
+                int far_y = n1_y + dir_y;
 
-    /* ═══════════════════════════════════════════════════════════════════
-     * HIÉRARCHIE CLAIRE : max(attaque, défense) détermine la priorité
-     * ═══════════════════════════════════════════════════════════════════ */
-    
-    int score = 0;
-    
-    /* Niveau 1 : Victoires */
-    if (g->captures[player] + my_captures / 2 >= 5) return 2000000000;
-    if (attack_score >= WIN_SCORE) return 2000000000;
-    
-    if (g->captures[opponent] + opp_captures / 2 >= 5) return 1900000000;
-    if (defense_score >= WIN_SCORE) return 1900000000;
-    
-    /* Niveau 2 : Menaces critiques */
-    if (attack_score >= OPEN_FOUR) return 1800000000;
-    if (defense_score >= OPEN_FOUR) return 1700000000;
-    
-    if (attack_score >= CLOSED_FOUR) return 1600000000;
-    if (defense_score >= CLOSED_FOUR) return 1500000000;
-    
-    /* Niveau 3 : Menaces sérieuses */
-    if (attack_score >= OPEN_THREE) return 1400000000;
-    if (defense_score >= OPEN_THREE) return 1300000000;
-    
-    /* Niveau 4 : Captures significatives */
-    if (my_captures >= 2) {
-        score = 1200000000 + (g->captures[player] * 100000) + my_captures * 50000;
-        return score;
+                bool side1_blocked = IS_VALID(opp_x, opp_y) && g->board[GET_INDEX(opp_x, opp_y)] == opponent;
+                bool side2_blocked = IS_VALID(far_x, far_y) && g->board[GET_INDEX(far_x, far_y)] == opponent;
+                
+                if (side1_blocked && side2_blocked) suicidal = true;
+                if ((side1_blocked && IS_VALID(far_x, far_y) && g->board[GET_INDEX(far_x, far_y)] == EMPTY) ||
+                    (side2_blocked && IS_VALID(opp_x, opp_y) && g->board[GET_INDEX(opp_x, opp_y)] == EMPTY)) {
+                    suicidal = true;
+                }
+            }
+            if (suicidal) break;
+        }
+        if (suicidal) break;
     }
-    if (opp_captures >= 2) {
-        score = 1100000000 + (g->captures[opponent] * 100000) + opp_captures * 50000;
-        return score;
-    }
-    
-    /* Niveau 5 : Développement */
-    if (attack_score >= CLOSED_THREE) return 1000000000;
-    if (defense_score >= CLOSED_THREE) return 900000000;
-    
-    /* Score combiné pour le reste */
-    score = attack_score + defense_score;
-    
-    /* Bonus pour coups centraux */
-    int cx = abs(x - BOARD_SIZE / 2);
-    int cy = abs(y - BOARD_SIZE / 2);
-    score += (BOARD_SIZE - cx - cy) * 100;
-    
-    return score;
+    g->board[idx] = EMPTY;
+    return suicidal;
 }
 
 int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move) {
     int count = 0;
-    int effective_depth = (depth < 0) ? 0 : depth; 
-    bool disable_pruning = (depth < 0);
-
+    int opponent = (player == P1) ? P2 : P1;
+    
+    // 1. Bounding Box
     int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
-    bool empty_board = true;
-
-    // 1. Calcul de la Bounding Box stricte
+    bool empty = true;
     for (int i = 0; i < MAX_BOARD; i++) {
         if (g->board[i] != EMPTY) {
-            empty_board = false;
+            empty = false;
             int cx = GET_X(i); int cy = GET_Y(i);
             if (cx < min_x) min_x = cx; if (cx > max_x) max_x = cx;
             if (cy < min_y) min_y = cy; if (cy > max_y) max_y = cy;
         }
     }
-
-    if (empty_board) {
+    if (empty) {
         moves[0].index = GET_INDEX(BOARD_SIZE/2, BOARD_SIZE/2);
-        moves[0].score_estim = 20000000;
+        moves[0].score_estim = 2000000000;
         return 1;
     }
-
-    // 2. Élargissement des bornes (CORRECTION : On le fait AVANT le pruning)
-    // Cela assure qu'on cherche les défenses même un peu à l'extérieur du jeu actuel
     min_x = (min_x - 2 < 0) ? 0 : min_x - 2;
     max_x = (max_x + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_x + 2;
     min_y = (min_y - 2 < 0) ? 0 : min_y - 2;
     max_y = (max_y + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_y + 2;
 
-    // --- PRUNING DÉFENSIF AGRESSIF & VICTOIRE IMMÉDIATE ---
-    int urgent_move_count = 0;
-    int winning_move_index = -1;
-
+    // 2. Scan et Scoring
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
-            int i = GET_INDEX(x, y);
-            if (g->board[i] != EMPTY) continue;
-            if (!has_neighbors(g, i)) continue; 
-
-            // A. Vérifier SI JE GAGNE (Priorité absolue)
-            // On utilise quick_evaluate_move ou get_point_score pour nous-même
-            g->board[i] = player;
-            int my_score = get_point_score(g, x, y, player);
-            g->board[i] = EMPTY;
-
-            if (my_score >= WIN_SCORE) {
-                // On a trouvé une victoire, on arrête tout et on renvoie ce coup
-                moves[0].index = i;
-                moves[0].score_estim = 2000000000; // Infini
-                return 1; 
+            int idx = GET_INDEX(x, y);
+            if (g->board[idx] != EMPTY) continue;
+            
+            // Filtre Voisinage
+            bool has_neighbor = false;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (IS_VALID(nx, ny) && g->board[ny * BOARD_SIZE + nx] != EMPTY) {
+                        has_neighbor = true; break;
+                    }
+                }
+                if (has_neighbor) break;
             }
+            if (!has_neighbor) continue;
 
-            // B. Vérifier les MENACES MORTELLES adverses (OPEN_FOUR)
-            g->board[i] = (player == P1) ? P2 : P1; // Simuler l'adversaire
-            int opp_threat = get_point_score(g, x, y, (player == P1) ? P2 : P1);
-            g->board[i] = EMPTY;
-
-            // Si l'adversaire a un OPEN_FOUR (ou mieux), on DOIT bloquer
-            if (opp_threat >= OPEN_FOUR) {
-                moves[urgent_move_count].index = i;
-                // On donne un score très élevé mais inférieur à une victoire certaine
-                moves[urgent_move_count].score_estim = 1900000000 + opp_threat; 
-                urgent_move_count++;
-            }
-        }
-    }
-
-    // Si on a trouvé des coups urgents (et pas de victoire immédiate vue plus haut),
-    // on ne renvoie QUE ces coups de défense.
-    if (urgent_move_count > 0) {
-        return urgent_move_count;
-    }
-
-    // --- Suite standard (si pas d'urgence) ---
-
-    // Note : Tu peux garder ta "PREMIÈRE PASSE" ou la fusionner, 
-    // mais le code ci-dessus a déjà filtré les urgences absolues.
-    // La suite de ton code génère les coups normaux.
-
-    for (int y = min_y; y <= max_y; y++) {
-        for (int x = min_x; x <= max_x; x++) {
-            int i = GET_INDEX(x, y);
-            if (g->board[i] != EMPTY) continue;
-            if (!has_neighbors(g, i)) continue;
-
-            moves[count].index = i;
+            // --- SCORING ---
             int score = 0;
 
-            if (i == tt_best_move) score = 2100000000; 
-            else if (i == killer_moves[effective_depth][0]) score = 100000000;
-            else if (i == killer_moves[effective_depth][1]) score = 90000000;
-            else {
-                score = quick_evaluate_move(g, i, player);
-                score += history_heuristic[i];
+            // A. ALIGNEMENTS
+            g->board[idx] = player;
+            int my_attack = get_point_score(g, x, y, player);
+            g->board[idx] = EMPTY;
+
+            g->board[idx] = opponent;
+            int opp_threat = get_point_score(g, x, y, opponent);
+            g->board[idx] = EMPTY;
+
+            // B. CAPTURES (C'était la partie manquante !)
+            // Combien de pierres JE capture ?
+            // count_potential_captures regarde si poser une pierre en (x,y) capture quelque chose.
+            // On doit simuler la pierre posée pour que la fonction puisse vérifier les patterns.
+            
+            // 1. Mes captures (Attaque)
+            g->board[idx] = player; 
+            int my_captured_stones = count_potential_captures(g, x, y, player);
+            g->board[idx] = EMPTY;
+            int my_captured_pairs = my_captured_stones / 2;
+            
+            // 2. Ses captures (Défense / Blocage)
+            // Si l'adversaire jouait là, combien il capturerait ?
+            g->board[idx] = opponent;
+            int opp_captured_stones = count_potential_captures(g, x, y, opponent);
+            g->board[idx] = EMPTY;
+            int opp_captured_pairs = opp_captured_stones / 2;
+
+            bool suicidal = false;
+            if (opp_threat >= OPEN_THREE) {
+                if (is_move_suicidal(g, idx, player)) suicidal = true;
             }
+
+            // --- HIERARCHIE DES DECISIONS ---
+
+            // 1. VICTOIRE IMMEDIATE (Attaque)
+            // On met un score MAX pour qu'il soit testé en premier.
+            // IMPORTANT : PAS DE RETURN ICI ! On continue pour voir si on doit aussi défendre.
+            if (my_attack >= WIN_SCORE) {
+                 score = 2147483647; 
+            }
+            // 1b. VICTOIRE PAR CAPTURE
+            else if (my_captured_pairs > 0 && g->captures[player] + my_captured_pairs >= 5) {
+                score = 2147483647;
+            }
+
+            // 2. SURVIE IMMEDIATE (Défense)
+            // Si on n'a pas déjà trouvé une victoire (score < MAX), on regarde l'urgence défensive.
+            // Le blocage reçoit un score légèrement inférieur à la victoire (2 Mrd vs 2.14 Mrd)
+            if (score < 2000000000) { 
+                if (opp_threat >= WIN_SCORE || (opp_captured_pairs > 0 && g->captures[opponent] + opp_captured_pairs >= 5)) {
+                        score = 2000000000; 
+                        if (suicidal) score -= 1000000; 
+                }
+            }
+            
+            // 3. GROSSES MENACES (Open 4)
+            // Si ce n'est ni une victoire immédiate ni une défaite immédiate
+            if (score < 1900000000) {
+                if (opp_threat >= OPEN_FOUR) {
+                    score = 1910000000; // Priorité défense sur l'attaque non-létale
+                    if (suicidal) score -= 10000000; 
+                }
+                else if (my_attack >= OPEN_FOUR) {
+                    score = 1900000000; 
+                }
+                // 4. Open 3 et Captures Tactiques
+                else {
+                    score = my_attack + opp_threat; // Base
+
+                    // Bonus Captures
+                    if (my_captured_pairs > 0) score += my_captured_pairs * 700000000; 
+                    if (opp_captured_pairs > 0) score += opp_captured_pairs * 800000000;
+
+                    // Open 3
+                    if (opp_threat >= OPEN_THREE) { 
+                        score += 600000000; 
+                        if (suicidal) score = 500; 
+                    }
+                    else if (my_attack >= OPEN_THREE) {
+                        score += 500000000; 
+                    }
+                    
+                    if (idx == tt_best_move) score += 10000000;
+                    if (is_move_suicidal(g, idx, player)) score -= 500000;
+                }
+            }
+
+            moves[count].index = idx;
             moves[count].score_estim = score;
             count++;
         }
     }
-    
-    // Le tri et le beam search restent identiques...
+
+    // 3. Tri
     qsort(moves, count, sizeof(MoveCandidate), compare_moves);
-    
-    if (disable_pruning) return count;
 
-    int beam_width;
-    bool defensive_situation = (count > 0 && moves[0].score_estim >= 1700000000);
-    
-    if (defensive_situation) beam_width = 25;
-    else if (depth >= 8) beam_width = 10;
-    else if (depth >= 6) beam_width = 15;
-    else beam_width = 20;
+    // 4. Validation (Double Three)
+    int valid_count = 0;
+    int max_check = (count > 50) ? 50 : count;
+    MoveCandidate final_moves[MAX_BOARD];
 
-    int final_count = 0;
-    for (int i = 0; i < count; i++) {
-        if (i < beam_width || moves[i].score_estim >= 1550000000) {
-            final_count++;
-        } else {
-            break;
+    for (int i = 0; i < max_check; i++) {
+        // C'est ICI que le "faux" coup gagnant sera éliminé s'il est interdit
+        if (!is_double_three(g, moves[i].index, player)) {
+            final_moves[valid_count++] = moves[i];
         }
     }
-    
-    if (final_count < 5 && count >= 5) final_count = 5;
-    
-    return final_count;
+
+    // Recopie
+    for(int i=0; i<valid_count; i++) moves[i] = final_moves[i];
+
+    // 5. Pruning d'Urgence
+    // On garde tous les coups critiques (> 1.4 Milliard)
+    if (valid_count > 0 && final_moves[0].score_estim >= 1400000000) {
+        int urgent = 0;
+        for(int i=0; i<valid_count; i++) {
+            if(final_moves[i].score_estim >= 1400000000) urgent++;
+            else break;
+        }
+        if (urgent > 0) return urgent;
+    }
+
+    int beam_width = (depth >= 6) ? 12 : 18;
+    return (valid_count > beam_width) ? beam_width : valid_count;
 }

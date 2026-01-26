@@ -1,7 +1,7 @@
 #include "../include/gomoku.h"
 
 /*
- * FONCTION CORRIGÉE : Détecte les patterns gappés et retourne la case du trou
+ * Détecte les patterns gappés et retourne la case du trou
  * Scanne TOUTES les fenêtres de 5 cases possibles, pas seulement celles centrées sur une pierre
  */
 static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
@@ -57,6 +57,32 @@ static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
     }
     
     return -1;
+}
+
+int get_threat_level(int score) {
+    if (score >= WIN_SCORE) return IDX_WIN;
+    if (score >= OPEN_FOUR) return IDX_OPEN_FOUR; // Inclut les Gapped Fours gagnants
+    if (score >= CLOSED_FOUR) return IDX_CLOSED_FOUR; // Inclut les menaces fortes
+    if (score >= OPEN_THREE) return IDX_OPEN_THREE;
+    if (score >= CLOSED_THREE) return IDX_CLOSED_THREE;
+    return IDX_OTHERS;
+}
+
+void refresh_board_stats(game *g) {
+    // 1. Reset complet des structures
+    g->pos_score[1] = 0;
+    g->pos_score[2] = 0;
+    memset(g->threat_counts, 0, sizeof(g->threat_counts));
+    memset(g->max_threat_level, 0, sizeof(g->max_threat_level));
+
+    // 2. Scan complet du plateau
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] == EMPTY) continue;
+        
+        // On simule l'ajout de la pierre pour déclencher les mises à jour
+        // Note: update_impacted_scores ajoute le score, donc c'est parfait.
+        update_impacted_scores(g, GET_X(i), GET_Y(i), false); // false = ADD
+    }
 }
 
 /*
@@ -264,7 +290,7 @@ int find_gapped_three_hole(game *g, int player) {
 }
 
 // Helper inline pour éviter la répétition de code
-static inline int evaluate_line(game *g, int x, int y, int dx, int dy, int player) {
+int evaluate_line(game *g, int x, int y, int dx, int dy, int player) {
     int score = 0;
     int len = 1;
     
@@ -445,256 +471,177 @@ static void recalculate_scores(game *g, int *score_p1, int *score_p2, int *max_t
     }
 }
 
+/* Met à jour les statistiques (Score total + Compteurs de menaces) */
+static void update_stats(game *g, int player, int score, bool remove_mode) {
+    if (score == 0) return;
+
+    int lvl = get_threat_level(score);
+
+    if (remove_mode) {
+        g->pos_score[player] -= score;
+        g->threat_counts[player][lvl]--;
+    } else {
+        g->pos_score[player] += score;
+        g->threat_counts[player][lvl]++;
+    }
+
+    // Mise à jour paresseuse du Max Threat
+    // On part du haut (WIN) et on descend jusqu'à trouver un compteur > 0
+    for (int i = IDX_WIN; i >= 0; i--) {
+        if (g->threat_counts[player][i] > 0) {
+            g->max_threat_level[player] = i;
+            return;
+        }
+    }
+    g->max_threat_level[player] = 0;
+}
+
+/*
+ * Cœur de l'incrémental : Scanne une petite fenêtre autour de (x,y)
+ * pour trouver les "Têtes de lignes" impactées et mettre à jour leur score.
+ */
+void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
+    // Directions : Horizontal, Vertical, Diag1, Diag2
+    int dirs[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
+
+    for (int d = 0; d < 4; d++) {
+        int dx = dirs[d][0];
+        int dy = dirs[d][1];
+
+        // On regarde une fenêtre de [-5, +0] autour de x,y pour trouver les DÉBUTS de lignes
+        // qui pourraient passer par (x,y).
+        for (int k = -5; k <= 0; k++) {
+            int sx = x + k * dx;
+            int sy = y + k * dy;
+
+            if (!IS_VALID(sx, sy)) continue;
+
+            int p = g->board[GET_INDEX(sx, sy)];
+            if (p == EMPTY) continue;
+
+            // Vérifie si c'est bien le début d'une séquence pour ce joueur
+            // (C'est-à-dire que la case d'avant est hors-plateau ou d'une autre couleur)
+            int prev_x = sx - dx;
+            int prev_y = sy - dy;
+            bool is_start = false;
+
+            if (!IS_VALID(prev_x, prev_y)) {
+                is_start = true;
+            } else if (g->board[GET_INDEX(prev_x, prev_y)] != p) {
+                is_start = true;
+            }
+
+            if (is_start) {
+                // On évalue cette ligne qui passe potentiellement par (x,y)
+                // Note : On re-vérifie si elle passe vraiment par la zone d'impact si on veut optimiser,
+                // mais ici on réévalue simplement les têtes proches, ce qui est sûr et rapide.
+                int score = evaluate_line(g, sx, sy, dx, dy, p);
+                update_stats(g, p, score, remove_mode);
+            }
+        }
+    }
+}
+
+/*
+ * Nouvelle version O(1) de evaluate_board
+ * Elle utilise les valeurs pré-calculées.
+ */
 int evaluate_board(game *g, int player) {
     int opponent = (player == P1) ? P2 : P1;
+
+    // 1. Victoire immédiate détectée par les compteurs
+    if (g->max_threat_level[player] == IDX_WIN) return WIN_SCORE;
+    if (g->max_threat_level[opponent] == IDX_WIN) return -WIN_SCORE;
     
-    int current_p1_score = 0;
-    int current_p2_score = 0;
-    int max_p1_threat = 0;
-    int max_p2_threat = 0;
+    // Victoire par capture
+    if (g->captures[opponent] >= 5) return -WIN_SCORE; 
+    if (g->captures[player] >= 5) return WIN_SCORE;
 
-    recalculate_scores(g, &current_p1_score, &current_p2_score, &max_p1_threat, &max_p2_threat);
+    // 2. Score Positionnel de Base (O(1))
+    long long final_score = g->pos_score[player] - g->pos_score[opponent];
 
-    int my_score = (player == P1) ? current_p1_score : current_p2_score;
-    int opp_score = (player == P1) ? current_p2_score : current_p1_score;
-    
-    int opp_max_threat = (player == P1) ? max_p2_threat : max_p1_threat;
-    int my_max_threat = (player == P1) ? max_p1_threat : max_p2_threat;
+    // 3. Mode Panique basé sur les BUCKETS (Plus fiable que l'ancien max_threat)
+    int opp_threat_lvl = g->max_threat_level[opponent];
+    int my_threat_lvl = g->max_threat_level[player];
 
-    // 1. Victoire/Défaite absolue
-    if (opp_max_threat >= WIN_SCORE || g->captures[opponent] >= 5) return -WIN_SCORE; 
-    if (my_max_threat >= WIN_SCORE || g->captures[player] >= 5) return WIN_SCORE;
+    if (opp_threat_lvl >= IDX_OPEN_THREE) {
+        // Calcul du facteur de panique
+        long long panic_val = 0;
+        if (opp_threat_lvl == IDX_OPEN_FOUR) panic_val = OPEN_FOUR;
+        else if (opp_threat_lvl == IDX_CLOSED_FOUR) panic_val = CLOSED_FOUR;
+        else if (opp_threat_lvl == IDX_OPEN_THREE) panic_val = OPEN_THREE;
 
-    // 2. Score de base
-    long long final_score = (long long)my_score - (long long)opp_score;
-    
-    // 3. Panique Proportionnelle (simplifiée avec la nouvelle échelle)
-    if (opp_max_threat >= OPEN_THREE) {
-        if (my_max_threat < CLOSED_FOUR) {
-            final_score -= (long long)(opp_max_threat * 3);
+        // Si on n'a pas de contre-menace plus forte, on panique
+        if (my_threat_lvl < IDX_CLOSED_FOUR) {
+            final_score -= (panic_val * 4);
         } else {
-            final_score -= (long long)(opp_max_threat);
+            final_score -= panic_val;
         }
-    } else if (opp_max_threat >= CLOSED_THREE) {
-        final_score -= (long long)(opp_max_threat * 2);
+    } else if (opp_threat_lvl == IDX_CLOSED_THREE) {
+        final_score -= CLOSED_THREE * 2;
     }
 
-    // 4. Captures (valeur augmentée)
-    final_score += (g->captures[player] * CAPTURE_BONUS); 
-    final_score -= (g->captures[opponent] * CAPTURE_BONUS);
-    
-    // 5. (NOUVEAU) Pénalité pour paires vulnérables
-    int my_vulnerable = count_vulnerable_pairs(g, player);
-    int opp_vulnerable = count_vulnerable_pairs(g, opponent);
-    
-    // Chaque paire vulnérable est un risque, surtout si l'adversaire capture déjà
-    int vulnerability_penalty = my_vulnerable * 25000;
-    if (g->captures[opponent] >= 2) {
-        vulnerability_penalty *= 2; // Double pénalité si l'adversaire capture déjà
-    }
-    if (g->captures[opponent] >= 3) {
-        vulnerability_penalty *= 2; // Quadruple pénalité si proche de la victoire
-    }
-    final_score -= vulnerability_penalty;
-    
-    // Bonus pour paires adverses vulnérables (opportunité de capture)
-    int vulnerability_bonus = opp_vulnerable * 20000;
-    if (g->captures[player] >= 2) {
-        vulnerability_bonus *= 2;
-    }
-    final_score += vulnerability_bonus;
-    
-    // 6. (NOUVEAU) Bonus/Malus basé sur l'écart de captures
-    int capture_diff = g->captures[player] - g->captures[opponent];
-    if (capture_diff > 0) {
-        // On a l'avantage en captures
-        final_score += capture_diff * 30000;
-    } else if (capture_diff < 0) {
-        // L'adversaire a l'avantage en captures
-        final_score += capture_diff * 40000; // Pénalité plus forte
-    }
-
-    /* NOUVEAU : Pénalité MAJEURE si l'adversaire a plus de captures */
-    int capture_gap = g->captures[opponent] - g->captures[player];
-    if (capture_gap > 0) {
-        /* Chaque paire d'avance adverse est TRÈS dangereuse */
-        final_score -= capture_gap * 80000;
-        
-        /* Si l'adversaire a 3+ paires, c'est critique */
-        if (g->captures[opponent] >= 3) {
-            final_score -= 200000;
-        }
-        if (g->captures[opponent] >= 4) {
-            final_score -= 500000;
-        }
-    }
-    
-    /* NOUVEAU : Bonus pour prendre l'initiative en captures */
-    if (g->captures[player] > g->captures[opponent]) {
-        final_score += (g->captures[player] - g->captures[opponent]) * 50000;
-    }
-    
-    /* NOUVEAU : Pénalité pour être en mode "défense pure" */
-    /* (Détecté si on a moins de menaces que l'adversaire) */
-    int my_threats = count_serious_threats(g, player);
-    int opp_threats = count_serious_threats(g, opponent);
-    
-    if (opp_threats > my_threats + 1) {
-        /* On est dominé en menaces = MAUVAIS */
-        final_score -= (opp_threats - my_threats) * 30000;
-    }
-    
-    // NOUVEAU : Intégrer les captures dans le score global
-    int my_capture_threat = 0;
-    int opp_capture_threat = 0;
-
-    // Calculer les menaces de capture
-    if (g->captures[player] >= 4) my_capture_threat = WIN_SCORE;
-    else if (g->captures[player] >= 3) my_capture_threat = CLOSED_FOUR;
-    else if (g->captures[player] >= 2) my_capture_threat = OPEN_THREE;
-
-    if (g->captures[opponent] >= 4) opp_capture_threat = WIN_SCORE;
-    else if (g->captures[opponent] >= 3) opp_capture_threat = CLOSED_FOUR;
-    else if (g->captures[opponent] >= 2) opp_capture_threat = OPEN_THREE;
-
-    // Ajouter au score final
-    final_score += my_capture_threat / 10;  // Bonus pour nos captures
-    final_score -= opp_capture_threat / 5;  // Pénalité pour captures adverses (plus forte)
-
-    /* ══════════════════════════════════════════════════════════════════════
-     * NOUVEAU : PÉNALITÉ EXPONENTIELLE POUR CAPTURES ADVERSES
-     * Plus l'adversaire a de captures, plus c'est dangereux
-     * ══════════════════════════════════════════════════════════════════════ */
-    
     int opp_caps = g->captures[opponent];
     
     if (opp_caps >= 4) {
-        /* 4 paires = DANGER EXTRÊME (une capture de plus = victoire) */
-        final_score -= 50000000;  // Quasi WIN_SCORE
+        /* 4 paires = ALERTE ROUGE (Une erreur et c'est perdu) */
+        // On met une valeur proche de la défaite pour forcer l'IA à tout faire pour éviter ça
+        final_score -= 1500000000; // -1.5 Milliards (Proche de -2Mrd WIN)
     }
     else if (opp_caps >= 3) {
-        /* 3 paires = TRÈS DANGEREUX */
-        final_score -= 5000000;
+        /* 3 paires = TRES GRAVE */
+        final_score -= 300000000; // -300 Millions (Moitié d'un Open 3)
     }
     else if (opp_caps >= 2) {
         /* 2 paires = Dangereux */
-        final_score -= 500000;
-    }
-    else if (opp_caps >= 1) {
-        /* 1 paire = À surveiller */
-        final_score -= 100000;
-    }
-    
-    /* Bonus si ON a des captures (pression offensive) */
-    int my_caps = g->captures[player];
-    
-    if (my_caps >= 4) {
-        final_score += 40000000;  // On est proche de gagner !
-    }
-    else if (my_caps >= 3) {
-        final_score += 4000000;
-    }
-    else if (my_caps >= 2) {
-        final_score += 400000;
-    }
-    else if (my_caps >= 1) {
-        final_score += 80000;
-    }
-    
-    /* NOUVEAU : Pénalité pour paires vulnérables * captures adverses */
-    /* Plus l'adversaire a de captures, plus nos paires vulnérables sont dangereuses */
-    if (opp_caps >= 2 && my_vulnerable > 0) {
-        int vulnerability_danger = my_vulnerable * opp_caps * 100000;
-        final_score -= vulnerability_danger;
-        
-        #ifdef DEBUG
-        printf("DEBUG eval: %d paires vulnérables * %d caps adverses = pénalité %d\n",
-               my_vulnerable, opp_caps, vulnerability_danger);
-        #endif
+        final_score -= 50000000; // Augmenté x10
     }
 
-    // NOUVEAU : Pénalité exponentielle pour menaces adverses non contrées
-    if (opp_max_threat >= OPEN_THREE) {
-        // Vérifier si on peut bloquer
-        bool can_block = false;
-        for (int i = 0; i < MAX_BOARD && !can_block; i++) {
-            if (g->board[i] != EMPTY) continue;
-            g->board[i] = player;
-            int new_opp_threat = 0;
-            // Recalculer menace adverse après notre coup
-            for (int j = 0; j < MAX_BOARD; j++) {
-                if (g->board[j] != EMPTY) continue;
-                g->board[j] = opponent;
-                int s = get_point_score(g, GET_X(j), GET_Y(j), opponent);
-                if (s > new_opp_threat) new_opp_threat = s;
-                g->board[j] = EMPTY;
+    // 4. Bonus de Captures
+    final_score += (g->captures[player] * CAPTURE_BONUS); 
+    final_score -= (g->captures[opponent] * CAPTURE_BONUS);
+
+    if (final_score < WIN_SCORE && final_score > -WIN_SCORE) {
+        int opp_threat_lvl = (player == P1) ? g->max_threat_level[P2] : g->max_threat_level[P1]; // Si vous utilisez les buckets
+        // OU si vous utilisez l'ancienne version :
+        // int opp_threat_lvl = (player == P1) ? max_p2_threat : max_p1_threat;
+        
+        // Seuil de déclenchement : On ne lance le VCF (coûteux) que s'il y a danger
+        // OPEN_THREE est le minimum pour commencer une attaque forcée.
+        if (opp_threat_lvl >= OPEN_THREE) {
+            // On limite la profondeur à 6 ou 8 coups pour rester rapide
+            // On passe 'g->ia_timer.start_ts' converti ou on utilise clock()
+            if (check_vcf_win(g, opponent, 0, 8, clock())) {
+                return -WIN_SCORE; // ABANDONNER CETTE BRANCHE, C'EST LA MORT
             }
-            g->board[i] = EMPTY;
-            if (new_opp_threat < opp_max_threat) can_block = true;
-        }
-        
-        if (!can_block) {
-            // Menace imparable → score catastrophique
-            final_score -= opp_max_threat * 10;
         }
     }
+    
+    // Clamp pour rester dans les bornes int
+    if (final_score > WIN_SCORE) return WIN_SCORE;
+    if (final_score < -WIN_SCORE) return -WIN_SCORE;
 
-    /* ═══════════════════════════════════════════════════════════════════
-     * NOUVEAU : Pénalité pour course à la victoire défavorable
-     * Si l'adversaire a une menace critique et qu'on ne peut pas gagner avant
-     * ═══════════════════════════════════════════════════════════════════ */
-    
-    // Calculer les meilleures menaces de chaque joueur
-    int my_best_single_threat = 0;
-    int opp_best_single_threat = 0;
-    
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
+    /* DÉTECTION DES FOURCHETTES (FORKS) ADVERSES */
+    if (final_score > -WIN_SCORE && final_score < WIN_SCORE) {
+        int fork_penalty = 0;
         
-        // Menace joueur
-        g->board[idx] = player;
-        int my_threat = get_point_score(g, GET_X(idx), GET_Y(idx), player);
-        g->board[idx] = EMPTY;
-        if (my_threat > my_best_single_threat) my_best_single_threat = my_threat;
-        
-        // Menace adversaire
-        g->board[idx] = opponent;
-        int opp_threat = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
-        g->board[idx] = EMPTY;
-        if (opp_threat > opp_best_single_threat) opp_best_single_threat = opp_threat;
-    }
-    
-    /* Pénalité si l'adversaire a une menace supérieure ou égale */
-    if (opp_best_single_threat >= OPEN_THREE) {
-        // L'adversaire a au moins un OPEN_THREE
-        
-        if (my_best_single_threat < opp_best_single_threat) {
-            // Notre meilleure menace est inférieure → DANGER
-            int threat_gap = opp_best_single_threat - my_best_single_threat;
-            final_score -= threat_gap;  // Pénalité proportionnelle
+        // On scanne les cases vides intéressantes
+        // (Optimisation : limiter aux alentours du dernier coup ou des menaces)
+        for (int i = 0; i < MAX_BOARD; i++) {
+            if (g->board[i] != EMPTY) continue;
             
-            #ifdef DEBUG
-            printf("EVAL PENALTY: Opp threat %d > My threat %d, penalty=%d\n",
-                   opp_best_single_threat, my_best_single_threat, threat_gap);
-            #endif
+            // Si l'adversaire joue ici, est-ce qu'il nous tue ?
+            int val = compute_fork_value(g, i, opponent);
+            if (val > 0) {
+                // Il a une fourchette !
+                fork_penalty = 1500000000; // -1.5 Milliards
+                break; // Une seule suffit pour perdre
+            }
         }
-        
-        // Pénalité supplémentaire si OPEN_FOUR adverse non contré
-        if (opp_best_single_threat >= OPEN_FOUR && my_best_single_threat < OPEN_FOUR) {
-            final_score -= OPEN_FOUR;  // Pénalité massive
-            #ifdef DEBUG
-            printf("EVAL CRITICAL: Uncontested OPEN_FOUR! Penalty=%d\n", OPEN_FOUR);
-            #endif
-        }
-    }
-    
-    /* Bonus si on domine la course */
-    if (my_best_single_threat >= OPEN_THREE && my_best_single_threat > opp_best_single_threat) {
-        int dominance_bonus = (my_best_single_threat - opp_best_single_threat) / 2;
-        final_score += dominance_bonus;
+        final_score -= fork_penalty;
     }
 
-    return final_score;
+    return (int)final_score;
 }
 
 /* 

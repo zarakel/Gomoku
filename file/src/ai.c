@@ -98,16 +98,22 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
 /* Orchestre l'Iterative Deepening */
 static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
     int best_move = -1;
+    int prev_best_move = -1; // Sauvegarde de sécurité
     int prev_score = 0;
 
     for (int depth = 2; depth <= MAX_DEPTH; depth += 2) {
+
+        // Sauvegarde le meilleur coup de la profondeur précédente valide
+        if (best_move != -1) prev_best_move = best_move;
+        
         int score = run_aspiration_search(g, depth, prev_score, &best_move, ia_player, start);
         
         if (score == -2) { // Timeout
             #ifdef DEBUG
             printf("Timeout at depth %d. Keeping best move from depth %d.\n", depth, depth-2);
             #endif
-            break;
+            if (prev_best_move != -1) return prev_best_move;
+            return best_move;
         }
 
         prev_score = score;
@@ -201,6 +207,7 @@ void makeIaMove(game *gameData, screen *windows) {
 
     /* Phase 2 : Minimax si pas de décision tactique */
     if (!is_tactical) {
+        refresh_board_stats(gameData);
         best_move = run_iterative_deepening(gameData, ia_player, start);
     }
 

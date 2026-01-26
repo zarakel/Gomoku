@@ -62,13 +62,15 @@
 // --- POIDS DES SCORES (HIÉRARCHIE LOGARITHMIQUE) ---
 // Chaque niveau est ~10x plus important que le précédent
 
-#define WIN_SCORE       1000000000  // 10^9 - Victoire absolue
-#define OPEN_FOUR       100000000   // 10^8 - Victoire au prochain tour
-#define CLOSED_FOUR     10000000    // 10^7 - Force le blocage immédiat
-#define OPEN_THREE      1000000     // 10^6 - Menace critique
-#define CLOSED_THREE    100000      // 10^5 - Menace sérieuse
-#define OPEN_TWO        10000       // 10^4 - Bon développement
-#define CLOSED_TWO      1000        // 10^3 - Développement faible
+#define WIN_SCORE       2000000000 // Victoire certaine
+#define OPEN_FOUR       1000000000 // Victoire imparable au prochain tour
+#define CLOSED_FOUR     800000000  // Menace très forte (force réponse)
+#define OPEN_THREE      600000000  // <--- AUGMENTÉ : C'est quasi une défaite si ignoré
+#define CLOSED_THREE    500000     // Menace tactique mineure
+#define OPEN_TWO        10000
+#define CLOSED_TWO      100       // 10^3 - Développement faible
+
+#define THREAT_THRESHOLD 500000000
 
 // Bonus/Malus
 #define CAPTURE_BONUS   50000       // Par paire capturée
@@ -79,6 +81,14 @@
 #define IS_VALID_PIXEL(x, y, win) \
     ((x) >= 0 && (y) >= 0 && \
      (x) < (int)(win)->width && (y) < (int)(win)->height)
+
+#define THREAT_LEVELS 6
+#define IDX_WIN 5
+#define IDX_OPEN_FOUR 4
+#define IDX_CLOSED_FOUR 3
+#define IDX_OPEN_THREE 2
+#define IDX_CLOSED_THREE 1
+#define IDX_OTHERS 0
 
 // --- STRUCTURES ---
 
@@ -117,6 +127,11 @@ typedef struct game
     bool    game_over;
     timer   ia_timer;
     uint64_t current_hash;
+    long long pos_score[3]; // [0]=unused, [1]=P1, [2]=P2
+    // threats[JOUEUR][NIVEAU_MENACE]
+    int threat_counts[3][THREAT_LEVELS]; 
+    // On garde aussi le max_threat en cache pour un accès O(1)
+    int max_threat_level[3];
 } game;
 
 typedef struct both
@@ -215,6 +230,7 @@ bool    is_double_three(game *g, int idx, int player);
 void    explain_double_three(game *g, int idx, int player);
 int     find_gapped_four_hole(game *g, int player);
 int     find_gapped_three_hole(game *g, int player);
+void    refresh_board_stats(game *g);
 
 // ai.c
 void    makeIaMove(game *gameData, screen *windows);
@@ -250,17 +266,17 @@ int     compute_capture_danger(game *g, int opponent, int *best_idx);
 // ai_tactics.c
 int     find_blocking_move(game *g, int threat_player);
 int     find_line_blocking_moves(game *g, int player, int *blocking_moves, int max_moves);
+bool    check_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time);
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * AI MULTI-THREAT FUNCTIONS
- * ════════════════════════════════════════════════════════════════════════════ */
-
+// ai_multi_threat.c
 int compute_junction_potential(game *g, int idx, int player);
+int evaluate_line(game *g, int x, int y, int dx, int dy, int player); // Rendre non-static
+int compute_fork_value(game *g, int idx, int player); // Nouvelle fonction
 
-/* ════════════════════════════════════════════════════════════════════════════
- * AI CAPTURES FUNCTIONS
- * ════════════════════════════════════════════════════════════════════════════ */
-
+// ai_captures.c
 int find_best_capture_move(game *g, int player);
+
+void update_impacted_scores(game *g, int x, int y, bool remove_mode);
+int get_threat_level(int score);
 
 #endif

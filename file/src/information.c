@@ -15,7 +15,15 @@ void printInformation(screen *windows, game *gameData)
     
     if (gameData->game_over)
     {
-        int winner = (gameData->turn == P1) ? P2 : P1; // Le tour a changé après le coup gagnant
+        // Si le jeu s'arrête immédiatement après le coup gagnant, le tour est encore au gagnant.
+        // On vérifie qui a gagné par sécurité via les captures, sinon on fait confiance au tour actuel.
+        
+        int winner = gameData->turn; 
+        
+        // Sécurité absolue : Vérifier si quelqu'un a gagné par captures (prioritaire)
+        if (gameData->captures[P1] >= 5) winner = P1;
+        else if (gameData->captures[P2] >= 5) winner = P2;
+        
         snprintf(turn_str, sizeof(turn_str), "GAME OVER - WINNER: P%d", winner);
     }
     else

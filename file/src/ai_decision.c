@@ -322,36 +322,20 @@ static int find_mandatory_defense(game *g, int ia_player) {
 
 int make_tactical_decision(game *g, int ia_player, clock_t start_time) {
     (void)start_time;
-    
-    /* RÈGLE 1 : VICTOIRE IMMÉDIATE */
+
+    // 1. Victoire immédiate (Gagner maintenant)
     int win_align = find_winning_alignment(g, ia_player);
-    if (win_align != -1) {
-        #ifdef DEBUG
-        printf("VICTOIRE: Alignement gagnant en (%d,%d)\n", 
-               GET_X(win_align), GET_Y(win_align));
-        #endif
-        return win_align;
-    }
-    
+    if (win_align != -1) return win_align;
+
     int win_capture = find_winning_capture(g, ia_player);
-    if (win_capture != -1) {
-        #ifdef DEBUG
-        printf("VICTOIRE: Capture gagnante en (%d,%d)\n", 
-               GET_X(win_capture), GET_Y(win_capture));
-        #endif
-        return win_capture;
-    }
+    if (win_capture != -1) return win_capture;
+
+    // 2. Défaite immédiate (L'adversaire a déjà 5 pierres ou gagne par capture)
+    // On garde juste la vérification "Est-ce que c'est déjà perdu ?"
+    // Mais on NE JOUE PAS les blocages d'Open 4 ici.
     
-    /* RÈGLE 2 : DÉFENSE OBLIGATOIRE (améliorée) */
-    int defense = find_mandatory_defense(g, ia_player);
-    if (defense != -1) {
-        return defense;
-    }
-    
-    /* RÈGLE 3 : MINIMAX DÉCIDE */
-    #ifdef DEBUG
-    printf("DECISION: Pas d'urgence → Minimax\n");
-    #endif
-    
-    return -1;
+    // -> On supprime l'appel à find_mandatory_defense qui renvoie des coups de blocage
+    // -> On laisse le Minimax trouver le meilleur blocage.
+
+    return -1; // Toujours renvoyer -1 pour laisser le Minimax décider
 }
