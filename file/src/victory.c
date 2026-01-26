@@ -49,29 +49,21 @@ void checkVictoryCondition(game *gameData)
 {
     if (gameData->game_over) return;
 
-    // 1. Victoire par CAPTURES (Immédiate)
-    // Note: checkPieceCapture dans captures.c a déjà mis à jour le compteur
+    // 1. Victoire par CAPTURES
     if (gameData->captures[P1] >= 5) {
-        #ifdef DEBUG
-            printf("VICTOIRE P1 (Noir) par captures (5 paires) !\n");
-        #endif
+        printf("VICTOIRE P1 (Noir) par captures (5 paires) !\n");
+        gameData->winner = P1; // <--- STOCKER LE VAINQUEUR
         gameData->game_over = true;
         return;
     }
     if (gameData->captures[P2] >= 5) {
-        #ifdef DEBUG
-            printf("VICTOIRE P2 (Blanc) par captures (5 paires) !\n");
-        #endif
+        printf("VICTOIRE P2 (Blanc) par captures (5 paires) !\n");
+        gameData->winner = P2; // <--- STOCKER LE VAINQUEUR
         gameData->game_over = true;
         return;
     }
 
     // 2. Victoire par ALIGNEMENT
-    // Optimisation : On ne scanne que les pions du joueur qui vient de jouer
-    // (Mais comme on n'a pas passé l'index du dernier coup, on scanne tout le board,
-    // ce qui est acceptable graphiquement mais pas pour l'IA. L'IA a son propre heuristic).
-    
-    // Pour l'interface graphique, on parcourt tout pour être sûr :
     for (int i = 0; i < MAX_BOARD; i++)
     {
         if (gameData->board[i] != EMPTY)
@@ -79,6 +71,7 @@ void checkVictoryCondition(game *gameData)
             if (checkFiveInARow(gameData->board, i, gameData->board[i]))
             {
                 printf("VICTOIRE JOUEUR %d par alignement !\n", gameData->board[i]);
+                gameData->winner = gameData->board[i]; // <--- STOCKER LE VAINQUEUR
                 gameData->game_over = true;
                 return;
             }

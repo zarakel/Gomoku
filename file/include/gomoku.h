@@ -124,6 +124,7 @@ typedef struct game
     int     board_size;
     int     turn;
     int     iaTurn;
+    int     winner;
     bool    game_over;
     timer   ia_timer;
     uint64_t current_hash;
