@@ -60,6 +60,26 @@
 #define IS_VALID(x, y) ((x) >= 0 && (x) < BOARD_SIZE && (y) >= 0 && (y) < BOARD_SIZE)
 
 // --- POIDS DES SCORES (HIÉRARCHIE LOGARITHMIQUE) ---
+
+#define WEIGHT_WIN          2000000000 // Victoire immédiate
+#define WEIGHT_BLOCK_WIN    1500000000 // Bloquer une victoire immédiate
+// ICI : Bloquer un 4 (même fermé) doit valoir PLUS que créer un 4 ouvert
+// Car l'adversaire joue avant nous !
+#define WEIGHT_BLOCK_FOUR   500000000  // Priorité absolue sur l'attaque
+#define WEIGHT_OPEN_FOUR    100000000  // Attaque forte
+#define WEIGHT_BLOCK_THREE  50000000   // Bloquer un 3
+#define WEIGHT_OPEN_THREE   10000000   // Créer un 3
+#define WEIGHT_HISTORY      100
+
+// Hiérarchie de tri (Ordre décroissant de priorité)
+#define SORT_HASH          2000000000 // Le coup qu'on sait être bon
+#define SORT_WIN_IMMEDIATE 1900000000 // Alignement de 5 ou Capture de la 5ème paire
+#define SORT_BLOCK_WIN     1800000000 // Empêcher l'adversaire de gagner tout de suite
+#define SORT_WIN_CAPTURE   1700000000 // Capture qui mène à la victoire (variante)
+#define SORT_CAPTURE       100000000  // Capture standard (très bon, mais pas vital)
+#define SORT_KILLER_1      50000000
+#define SORT_KILLER_2      40000000
+
 // Chaque niveau est ~10x plus important que le précédent
 
 #define WIN_SCORE       2000000000 // Victoire certaine
@@ -164,6 +184,7 @@ typedef struct {
 typedef struct {
     int index;
     int score_estim;
+    bool is_capture;
 } MoveCandidate;
 
 /* Constantes pour le système unifié de menaces */
@@ -184,6 +205,11 @@ extern int killer_moves[MAX_DEPTH][2];
 extern int history_heuristic[MAX_BOARD];
 extern long long debug_node_count;
 extern long long debug_cutoff_count;
+
+typedef struct {
+    int move_idx;
+    int score;
+} MoveVCF;
 
 // --- PROTOTYPES ---
 
@@ -248,7 +274,6 @@ void undo_move(game *g, int player, MoveUndo *undo);
 
 // ai_moves.c
 int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move);
-int quick_evaluate_move(game *g, int idx, int player);
 
 // ai_search.c
 int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
@@ -265,9 +290,11 @@ int     evaluate_defensive_capture_value(game *g, int capture_idx, int ia_player
 int     compute_capture_danger(game *g, int opponent, int *best_idx);
 
 // ai_tactics.c
-int     find_blocking_move(game *g, int threat_player);
-int     find_line_blocking_moves(game *g, int player, int *blocking_moves, int max_moves);
-bool    check_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time);
+// Vérifie si un joueur a une victoire forcée (VCF)
+bool has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit);
+// Cherche un coup miracle pour sauver la partie face à un VCF adverse
+int solve_defensive_crisis(game *g, int me);
+int find_winning_vcf(game *g, int attacker); 
 
 // ai_multi_threat.c
 int compute_junction_potential(game *g, int idx, int player);

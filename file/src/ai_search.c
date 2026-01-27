@@ -23,37 +23,55 @@ static int quiescence_search(game *g, int alpha, int beta, int ia_player, int qs
     }
 
     // 2. Évaluation statique (Stand Pat)
+    // L'idée est : "Si je ne fais rien, quel est mon score ?"
+    // Si ce score est déjà suffisant pour couper (beta), on s'arrête.
     int stand_pat = evaluate_board(g, ia_player);
     
-    // Limite de profondeur atteinte
+    // Limite de profondeur atteinte ou victoire/défaite immédiate
     if (qs_depth <= 0) return stand_pat;
+    if (stand_pat >= WIN_SCORE - 1000) return stand_pat;
+    if (stand_pat <= -WIN_SCORE + 1000) return stand_pat;
     
     if (stand_pat >= beta) return beta;
     if (alpha < stand_pat) alpha = stand_pat;
     
     int opponent = (ia_player == P1) ? P2 : P1;
     
-    // 3. Génération optimisée (utilise ton nouveau generate_moves rapide)
+    // 3. Génération optimisée
     MoveCandidate moves[MAX_BOARD];
     // On passe -1 en depth pour dire "génération brute sans heuristique historique"
+    // On passe -1 en tt_best_move car on n'a pas de TT pour la QS
     int count = generate_moves(g, moves, ia_player, -1, -1);
     
     for (int i = 0; i < count; i++) {
-        // 4. FILTRE CRITIQUE : On ne regarde que les menaces réelles
-        // Si le coup ne crée pas au moins un OPEN_THREE (ou ne bloque pas), on l'ignore.
-        // Cela réduit drastiquement l'arbre de recherche.
-        if (moves[i].score_estim < OPEN_THREE) continue;
+        // 4. FILTRE CRITIQUE : On ne regarde que les coups "intéressants"
+        // - Les captures (marquées par is_capture = true)
+        // - Les menaces fortes (Open 3 ou plus)
+        if (!moves[i].is_capture && moves[i].score_estim < OPEN_THREE) continue;
 
+        // Check temps fréquent dans la boucle
         if ((debug_node_count & 63) == 0) {
              if (check_timeout(start_time)) return -2;
         }
         
         int idx = moves[i].index;
         
+        // Simulation du coup
         MoveUndo undo;
         apply_move(g, idx, ia_player, &undo);
         
-        // Appel récursif (Note: on passe start_time pour le timeout)
+        // --- CHECK VICTOIRE APRÈS CAPTURE (NOUVEAU) ---
+        // Si c'était une capture, est-ce qu'elle a débloqué une victoire immédiate ?
+        if (moves[i].is_capture) {
+            int score_after = evaluate_board(g, ia_player);
+            if (score_after >= WIN_SCORE) {
+                undo_move(g, ia_player, &undo);
+                return score_after;
+            }
+        }
+        // ---------------------------------------------
+        
+        // Appel récursif (Note: on passe start_time et on décrémente qs_depth)
         int score = -quiescence_search(g, -beta, -alpha, opponent, qs_depth - 1, start_time);
         
         undo_move(g, ia_player, &undo);
@@ -94,11 +112,12 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
     int current_player = maximizingPlayer ? ia_player : ((ia_player == P1) ? P2 : P1);
 
     int current_eval = evaluate_board(g, ia_player);
-    // Coupure si victoire déjà acquise (optimisation)
-    if (abs(current_eval) >= WIN_SCORE - 1000) {
-        // Si on gagne, on préfère gagner TÔT (current_eval est positif) -> on enlève depth
-        // Si on perd, on préfère perdre TARD (current_eval est négatif) -> on ajoute depth
-        return (current_eval > 0) ? (current_eval - depth) : (current_eval + depth);
+
+    // Si victoire/défaite ABSOLUE (Alignement de 5 ou 5 Captures)
+    // Note : On utilise WIN_SCORE - 100 pour laisser une marge aux pénalités
+    if (abs(current_eval) >= WIN_SCORE - 100) {
+        // On retourne le score ajusté à la profondeur pour privilégier le chemin le plus court/long
+        return (current_eval > 0) ? (WIN_SCORE + depth) : (-WIN_SCORE - depth);
     }
 
     // 2. Feuilles : Lancer la Quiescence Search (avec timeout !)
@@ -170,6 +189,25 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
             if (val >= beta) {
                 debug_cutoff_count++;
                 tt_save(g->current_hash, depth, val, TT_LOWERBOUND, best_move_this_node);
+                
+                // --- AJOUTER CECI ---
+                if (g->board[best_move_this_node] == EMPTY) { // Si c'est un coup calme (pas capture)
+                    // 1. Killer Moves
+                    if (killer_moves[depth][0] != best_move_this_node) {
+                        killer_moves[depth][1] = killer_moves[depth][0];
+                        killer_moves[depth][0] = best_move_this_node;
+                    }
+                    
+                    // 2. History Heuristic
+                    // On augmente le score de ce coup (max 20000 pour éviter overflow)
+                    history_heuristic[best_move_this_node] += (depth * depth);
+                    if (history_heuristic[best_move_this_node] > 2000000) {
+                        // Downscale si ça devient trop gros (tous les scores / 2)
+                        for(int k=0; k<MAX_BOARD; k++) history_heuristic[k] /= 2;
+                    }
+                }
+                // --------------------
+
                 return best_val;
             }
             if (val > alpha) alpha = val;

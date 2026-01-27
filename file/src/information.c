@@ -15,13 +15,12 @@ void printInformation(screen *windows, game *gameData)
     
     if (gameData->game_over)
     {
-        // On utilise la valeur sûre stockée par victory.c
-        int winner = gameData->winner; 
+        // Utilisation du champ fiable winner
+        int win_player = gameData->winner;
+        // Sécurité si winner est 0 (ne devrait pas arriver)
+        if (win_player == 0) win_player = (gameData->turn == P1) ? P2 : P1;
         
-        // Sécurité (au cas où winner serait 0 par erreur d'init)
-        if (winner == 0) winner = (gameData->turn == P1) ? P2 : P1;
-
-        snprintf(turn_str, sizeof(turn_str), "GAME OVER - WINNER: P%d", winner);
+        snprintf(turn_str, sizeof(turn_str), "GAME OVER - WINNER: P%d", win_player);
     }
     else
     {
