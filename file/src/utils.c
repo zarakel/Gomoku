@@ -2,39 +2,38 @@
 
 bool isIaTurn(int iaTurn, int turn){return (iaTurn == turn);}
 
-#include "../include/gomoku.h"
-
 void resetGame(game *gameData, screen *windows)
 {
     #ifdef DEBUG
         printf("--- GAME RESET ---\n");
     #endif
-
-    // 1. Nettoyage mémoire brute (rapide et sûr)
+    // Reset du plateau (inchangé)
     memset(gameData->board, EMPTY, sizeof(gameData->board));
     
-    // 2. Remise à zéro des variables
     gameData->captures[P1] = 0;
     gameData->captures[P2] = 0;
+    gameData->turn = P1;
+    gameData->game_over = false;
+    gameData->winner = 0;
+    
+    gameData->score[0] = 0;
     gameData->score[P1] = 0;
     gameData->score[P2] = 0;
     
-    // 3. État du jeu
-    gameData->turn = P1;           // P1 reprend la main
-    gameData->game_over = false;   // Le jeu reprend
+    memset(gameData->pos_score, 0, sizeof(gameData->pos_score));
+    memset(gameData->threat_counts, 0, sizeof(gameData->threat_counts));
+    memset(gameData->max_threat_level, 0, sizeof(gameData->max_threat_level));
     
-    // IMPORTANT : Si on veut que l'IA recommence en P2, on s'assure qu'elle est prête
-    // On ne touche pas à iaTurn (le mode de jeu reste le même : Humain vs IA)
+    // ===== NOUVEAU : Reset Crisis State =====
+    gameData->in_crisis = false;
+    gameData->crisis_level = 0;
+    gameData->crisis_move_count = 0;
+    memset(gameData->crisis_moves, -1, sizeof(gameData->crisis_moves));
+    // =========================================
     
-    // 4. Timer
     resetTimer(&gameData->ia_timer);
-
-    // 5. Graphique
-    // On signale que la fenêtre a changé pour que la gameLoop redessine tout
-    // (Cadrillage + Bouton + Pions vides)
-    windows->resized = true; 
-    windows->changed = true;
+    clear_heuristics();
     
-    // Petit hack pour forcer le texte "Turn: P1" à s'afficher tout de suite
-    printInformation(windows, gameData);
+    windows->changed = true;
+    windows->resized = true;
 }

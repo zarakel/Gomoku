@@ -63,6 +63,11 @@ bool initialized(void *args, screen *windows, game *gameData)
 
     gameData->current_hash = 0;
 
+    gameData->in_crisis = false;
+    gameData->crisis_level = 0;
+    gameData->crisis_move_count = 0;
+    memset(gameData->crisis_moves, -1, sizeof(gameData->crisis_moves));
+
     return true;
 }
 

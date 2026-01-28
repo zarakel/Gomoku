@@ -44,7 +44,7 @@
 #define MAX_CAPTURES 10 // 5 paires = Victoire
 
 // Limites de temps et de profondeur
-#define MAX_DEPTH 30
+#define MAX_DEPTH 100
 #define TIME_LIMIT_MS 450 // On garde une marge de sécurité (50ms) pour l'affichage
 
 // Valeurs des cases (Optimisé pour lecture rapide)
@@ -153,6 +153,10 @@ typedef struct game
     int threat_counts[3][THREAT_LEVELS]; 
     // On garde aussi le max_threat en cache pour un accès O(1)
     int max_threat_level[3];
+    bool    in_crisis;              // Est-on en situation de crise ?
+    int     crisis_level;           // Intensité de la crise (0-3)
+    int     crisis_move_count;      // Nombre de coups critiques adverses détectés
+    int     crisis_moves[10];       // Liste des coups adverses menaçants
 } game;
 
 typedef struct both
@@ -294,7 +298,9 @@ int     compute_capture_danger(game *g, int opponent, int *best_idx);
 bool has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit);
 // Cherche un coup miracle pour sauver la partie face à un VCF adverse
 int solve_defensive_crisis(game *g, int me);
-int find_winning_vcf(game *g, int attacker); 
+int find_winning_vcf(game *g, int attacker);
+bool check_five_align(game *g, int idx, int player);
+bool is_move_capturable(game *g, int idx, int player);
 
 // ai_multi_threat.c
 int compute_junction_potential(game *g, int idx, int player);
@@ -306,5 +312,10 @@ int find_best_capture_move(game *g, int player);
 
 void update_impacted_scores(game *g, int x, int y, bool remove_mode);
 int get_threat_level(int score);
+
+// ===== ai_crisis.c =====
+void update_crisis_state(game *g, int ia_player);
+int find_best_defense_with_threat_space(game *g, int ia_player);
+bool is_winning_threat(game *g, int idx, int opponent);
 
 #endif

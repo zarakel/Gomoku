@@ -39,55 +39,73 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     int x = GET_X(idx);
     int y = GET_Y(idx);
     
-    // 2. ANALYSE CAPTURE (Critique pour la variante Pente)
-    // On utilise ta fonction légère existante
-    int captures = check_capture_count(g, idx, player); // Retourne nombre de PAIRES ou PIERRES? (Ton code dit paires capturées * 2 ou nb captures ?)
-    // check_capture_count dans ton code retourne le nombre de paires (vu la boucle 0..8) ? 
-    // Vérification : Ton check_capture_count semble retourner le nombre de pattern trouvés (donc paires).
-    
+    // 2. ANALYSE CAPTURE (inchangé)
+    int captures = check_capture_count(g, idx, player);
     if (captures > 0) {
-        // Est-ce une capture gagnante ? (J'ai déjà 4 paires + celle-ci = 5)
         if (g->captures[player] + captures >= 5) return SORT_WIN_IMMEDIATE;
-        
-        // Est-ce qu'on capture pour casser un 4 adverse ? (Très fort)
-        // (Simplification : toute capture est très bonne)
         return SORT_CAPTURE + (captures * 10000); 
     }
 
     int score = 0;
 
-    // 3. MENACES & BLOCAGES (Heuristique rapide)
+    // 3. MENACES & BLOCAGES (Modifié)
     
-    // Simuler Défense
-    g->board[idx] = opponent; 
-    int def_score = get_point_score(g, x, y, opponent);
-    g->board[idx] = EMPTY;
-    
-    if (def_score >= WIN_SCORE) return SORT_BLOCK_WIN; // Bloquer victoire immédiate
-
-    // Simuler Attaque
+    // A. Simuler Attaque (Mon coup)
     g->board[idx] = player;
     int atk_score = get_point_score(g, x, y, player);
     g->board[idx] = EMPTY;
 
-    if (atk_score >= WIN_SCORE) return SORT_WIN_IMMEDIATE; // Victoire immédiate par alignement
+    if (atk_score >= WIN_SCORE) return SORT_WIN_IMMEDIATE;
 
-    // Pondération Attaque / Défense pour les coups normaux
-    if (atk_score >= OPEN_FOUR) score += 5000000;
-    else if (atk_score >= CLOSED_FOUR) score += 2000000;
-    else if (atk_score >= OPEN_THREE) score += 1000000;
+    // B. Simuler Défense (Bloquer l'adversaire)
+    g->board[idx] = opponent; 
+    int def_score = get_point_score(g, x, y, opponent);
+    g->board[idx] = EMPTY;
     
-    if (def_score >= OPEN_FOUR) score += 4000000; // Bloquer un 4 est prioritaire sur créer un 4 fermé
-    else if (def_score >= CLOSED_FOUR) score += 2000000;
-    else if (def_score >= OPEN_THREE) score += 500000;
+    if (def_score >= WIN_SCORE) return SORT_BLOCK_WIN;
 
-    // 4. KILLER MOVES
-    if (depth < MAX_DEPTH) { // Sécurité tableau
+    // --- NOUVEAU : DÉTECTION DES FOURCHETTES (FORKS) ---
+    
+    // CAS 1 : C'est une Fourchette pour MOI ? (Je gagne)
+    if (atk_score >= OPEN_THREE) {
+        // Si je crée déjà une menace, est-ce que j'en crée une deuxième ?
+        int fork_bonus = compute_fork_value(g, idx, player);
+        if (fork_bonus > 0) {
+            // C'est une fourchette ! Priorité quasi-absolue.
+            return fork_bonus; 
+        }
+    }
+    
+    // CAS 2 : C'est une Fourchette pour LUI ? (Il va gagner, je dois bloquer)
+    // On ne vérifie que si c'est un point "chaud" pour l'adversaire (défense utile)
+    if (def_score >= OPEN_THREE) {
+        // Est-ce que l'adversaire allait faire une fourchette ici ?
+        int opp_fork_bonus = compute_fork_value(g, idx, opponent);
+        if (opp_fork_bonus > 0) {
+            // IL FAUT BLOQUER !
+            // On donne un score supérieur à une simple défense, mais inférieur à notre victoire.
+            // SORT_BLOCK_WIN (1.8Mrd) > Block Fork > Normal Moves
+            return 1400000000; 
+        }
+    }
+    // ---------------------------------------------------
+
+    // Scores standards (inchangés ou légèrement ajustés)
+    if (atk_score >= OPEN_FOUR) score += 50000000;
+    else if (atk_score >= CLOSED_FOUR) score += 20000000;
+    else if (atk_score >= OPEN_THREE) score += 10000000;
+    
+    if (def_score >= OPEN_FOUR) score += 40000000;
+    else if (def_score >= CLOSED_FOUR) score += 20000000;
+    else if (def_score >= OPEN_THREE) score += 5000000;
+
+    // 4. KILLER MOVES (inchangé)
+    if (depth < MAX_DEPTH) {
         if (idx == killer_moves[depth][0]) score += SORT_KILLER_1;
         else if (idx == killer_moves[depth][1]) score += SORT_KILLER_2;
     }
 
-    // 5. HISTORY HEURISTIC (Tie-breaker)
+    // 5. HISTORY HEURISTIC (inchangé)
     score += history_heuristic[idx];
 
     return score;
@@ -127,7 +145,8 @@ int check_capture_count(game *g, int idx, int player) {
 int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move) {
     int count = 0;
     
-    // 1. Définition de la zone de recherche (Bounding Box + 2 cases)
+    // --- 1. OPTIMISATION ZONE DE RECHERCHE ---
+    // On réduit le plateau aux zones intéressantes pour éviter de scanner du vide
     int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
     bool empty = true;
     
@@ -140,26 +159,26 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         }
     }
     
-    // Si plateau vide, jouer au centre
+    // Premier coup au centre si plateau vide
     if (empty) {
         moves[0].index = GET_INDEX(BOARD_SIZE/2, BOARD_SIZE/2);
         moves[0].score_estim = WEIGHT_WIN;
         return 1;
     }
 
-    // Élargir la zone de recherche de 2 cases autour des pierres existantes
+    // Marge de 2 cases autour des pierres existantes
     min_x = (min_x - 2 < 0) ? 0 : min_x - 2;
     max_x = (max_x + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_x + 2;
     min_y = (min_y - 2 < 0) ? 0 : min_y - 2;
     max_y = (max_y + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_y + 2;
 
-    // 2. Génération et Notation
+    // --- 2. GÉNÉRATION & HEURISTIQUE LÉGÈRE ---
     for (int y = min_y; y <= max_y; y++) {
         for (int x = min_x; x <= max_x; x++) {
             int idx = GET_INDEX(x, y);
             if (g->board[idx] != EMPTY) continue;
 
-            // Filtre voisin (Garde-le, c'est bien)
+            // Optimisation : On ne joue que s'il y a une pierre à max 2 cases (Voisinage)
             bool has_neighbor = false;
             for (int dy = -2; dy <= 2; dy++) {
                 for (int dx = -2; dx <= 2; dx++) {
@@ -173,11 +192,11 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
             }
             if (!has_neighbor) continue;
 
-            // --- NOTATION OPTIMISÉE ---
             moves[count].index = idx;
+            // Appel à l'heuristique rapide (score_move_ordering doit être efficace)
             moves[count].score_estim = score_move_ordering(g, idx, player, tt_best_move, depth);
             
-            // On marque si c'est une capture pour la Quiescence Search
+            // Pré-calcul capture pour le tri
             int caps = check_capture_count(g, idx, player);
             moves[count].is_capture = (caps > 0);
 
@@ -185,44 +204,85 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         }
     }
 
-    // Tri
+    // Tri des coups du meilleur au pire
     qsort(moves, count, sizeof(MoveCandidate), compare_moves);
 
-    // --- BEAM SEARCH INTELLIGENT ---
-    // Au lieu de couper brutalement à 20, on coupe seulement si le score chute trop
-    // ou si on a dépassé un quota ET qu'on n'est pas sur un coup forcé.
-    
+    // --- 3. SELECTION (BEAM SEARCH + EXTENSIONS) ---
     int final_count = 0;
-    int max_beam = (depth <= 4) ? 30 : 20;
+    int max_beam;
     
-    // Si on est en Quiescence (depth <= 0), on est très strict
+    // A. Calcul de la largeur du faisceau (Beam Width)
+    // Modification pour utiliser plus de temps :
+    if (g->in_crisis) {
+        max_beam = 100; // Augmenté de 80 à 100 pour tout voir en crise
+    } else {
+        // Jeu normal : On ouvre BEAUCOUP plus
+        if (depth <= 4) max_beam = 120;      // Au début (racine), on regarde 120 coups !
+        else if (depth <= 8) max_beam = 80;  // Milieu : 80 coups
+        else max_beam = 40;                  // Fin : 40 coups
+    }
+    
+    // Quiescence Search (Profondeur négative ou nulle) : Très sélectif pour la vitesse
     if (depth <= 0) max_beam = 12;
 
     for (int i = 0; i < count; i++) {
-        // 1. Si on a trouvé une victoire immédiate, on ne retourne QUE celle-là (Cutoff parfait)
+        bool keep = false;
+        int idx = moves[i].index;
+
+        // --- Règle 1 : Victoire Immédiate ---
         if (moves[i].score_estim >= SORT_WIN_IMMEDIATE) {
-            // Petite vérif Double-Three pour être sûr
+            // Check légalité IMMÉDIATEMENT
+            if (!is_double_three(g, idx, player)) {
+                moves[0] = moves[i];
+                return 1; // On ne retourne que celui-là, c'est gagné.
+            }
+            continue; // Si illégal, on l'ignore totalement
+        }
+
+        // --- Règle 2 : Le Quota (Beam) ---
+        if (i < max_beam) {
+            keep = true;
+        }
+        // --- Règle 3 : Les Extensions (Hors Quota) ---
+        else {
+            // A. Captures : Toujours garder (change le matériel)
+            if (moves[i].is_capture) keep = true;
+            
+            // B. Menaces d'alignement (C'EST ICI QUE TU GAGNES L'ATTAQUE)
+            // On garde tout ce qui crée un Open 3 ou mieux, même si c'est mal noté
+            // CLOSED_THREE est généralement autour de 5000-10000 points.
+            else if (moves[i].score_estim >= CLOSED_THREE) keep = true;
+            
+            // C. Coups Défensifs Critiques (identifiés par ai_crisis)
+            else if (g->in_crisis) {
+                for (int j = 0; j < g->crisis_move_count; j++) {
+                    if (idx == g->crisis_moves[j]) {
+                        keep = true; break;
+                    }
+                }
+            }
+        }
+
+        if (keep) {
+            // --- Règle 4 : Filtrage Légal (CRITIQUE) ---
+            // On ne garde JAMAIS un coup Double-Three dans l'arbre Minimax.
+            // Cela évite que l'IA "pense" gagner avec un coup interdit.
+            if (is_double_three(g, idx, player)) {
+                continue; 
+            }
+
+            moves[final_count++] = moves[i];
+        }
+    }
+
+    // Filet de sécurité : Si on a tout filtré (ex: que des coups illégaux), on cherche n'importe quoi de légal
+    if (final_count == 0 && count > 0) {
+        for (int i = 0; i < count; i++) {
             if (!is_double_three(g, moves[i].index, player)) {
                 moves[0] = moves[i];
-                return 1; 
-            }
-            continue; 
-        }
-
-        // 2. Si on a dépassé le quota, on vérifie si le coup vaut le coup d'être gardé
-        if (i >= max_beam) {
-            // On garde quand même si c'est une capture ou un blocage critique
-            if (moves[i].score_estim < SORT_CAPTURE && moves[i].score_estim < SORT_BLOCK_WIN) {
-                continue; // On jette
+                return 1;
             }
         }
-
-        // 3. Validation Double-Three (Uniquement pour les coups gardés)
-        if (moves[i].score_estim > 1000) { // On ne check que les coups un minimum pertinents
-            if (is_double_three(g, moves[i].index, player)) continue;
-        }
-
-        moves[final_count++] = moves[i];
     }
 
     return final_count;

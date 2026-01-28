@@ -18,7 +18,7 @@ int count_created_threats(game *g, int idx, int player) {
     g->board[idx] = player;
     
     for (int d = 0; d < 4; d++) {
-        // On utilise votre fonction evaluate_line désormais publique
+        // On utilise la fonction existante evaluate_line
         int score = evaluate_line(g, x, y, dx[d], dy[d], player);
         
         // Si ce coup crée une menace sérieuse sur cet axe
@@ -28,27 +28,32 @@ int count_created_threats(game *g, int idx, int player) {
     }
     
     g->board[idx] = EMPTY;
+
+    // Si on crée un Double Three interdit, ce n'est pas une menace valide (pour P1)
+    // Note : On suppose que is_double_three gère la règle Renju si active
+    if (threats_count >= 2) {
+        if (is_double_three(g, idx, player)) return 0;
+    }
+    
     return threats_count;
 }
 
 /*
- * Détecte si une case est un "Point Focal" (Fork Spot) pour un joueur.
- * Retourne un score énorme si c'est une fourchette.
- * Utilisé par heuristics.c pour pénaliser ces cases.
+ * Calcule un score BONUS pour une fourchette.
+ * Retourne un score énorme si c'est une fourchette, 0 sinon.
  */
 int compute_fork_value(game *g, int idx, int player) {
-    // 1. Pré-filtre rapide : Est-ce une jonction géométrique ?
-    // Inutile de lancer l'analyse lourde si la case est isolée
-    int potential = compute_junction_potential(g, idx, player);
-    if (potential < 2) return 0; 
+    // Optimisation : On ne lance l'analyse lourde que si le coup a déjà un potentiel
+    // (Cette vérification est faite dans ai_moves.c pour gagner du temps)
     
-    // 2. Analyse réelle : Est-ce que ça crée 2 vraies menaces ?
     int threats = count_created_threats(g, idx, player);
     
     if (threats >= 2) {
-        // C'EST UNE FOURCHETTE ! (Double Three ou mieux)
-        // C'est quasiment une victoire assurée pour celui qui joue là.
-        return 1800000000; // Score "Urgence Absolue"
+        // C'EST UNE FOURCHETTE !
+        // C'est quasiment une victoire assurée.
+        // On retourne un score juste en dessous de la victoire immédiate
+        // pour que ce coup soit trié en premier.
+        return 1500000000; // SORT_WIN_IMMEDIATE - epsilon
     }
     
     return 0;

@@ -21,8 +21,6 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
 
     while (++loop_guard < 3) {
         // --- SAUVEGARDE DES BORNES D'ORIGINE ---
-        // Alpha va bouger pendant la recherche (il monte si on trouve mieux).
-        // On a besoin des originaux pour savoir si on a "fail".
         int alpha_origin = alpha;
         int beta_origin = beta;
 
@@ -64,8 +62,6 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
         if (time_out) return -2; 
 
         // --- ASPIRATION LOGIC (CORRIGÉE) ---
-        // On compare le résultat avec les bornes D'ORIGINE.
-        
         bool fail_low = (current_best_score < alpha_origin); 
         bool fail_high = (current_best_score > beta_origin);
 
@@ -79,7 +75,7 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
                    depth, current_best_score, alpha_origin, beta_origin);
             #endif
             
-            // Si on a déjà tout ouvert (fenêtre large), on s'arrête là pour éviter la boucle
+            // Si on a déjà tout ouvert, on s'arrête là
             if (alpha_origin <= -WIN_SCORE - 9000 && beta_origin >= WIN_SCORE + 9000) {
                 *best_move_out = current_best_idx;
                 return current_best_score;
@@ -96,11 +92,15 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
     }
     return prev_score;
 }
-/* Orchestre l'Iterative Deepening */
+
+/* Orchestre l'Iterative Deepening avec Gestion Dynamique du Temps */
 static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
     int best_move = -1;
     int prev_best_move = -1; // Sauvegarde de sécurité
     int prev_score = 0;
+
+    // Conversion du budget temps en secondes (ex: 450ms -> 0.45s)
+    double allocated_time = (double)TIME_LIMIT_MS / 1000.0;
 
     for (int depth = 2; depth <= MAX_DEPTH; depth += 2) {
 
@@ -109,9 +109,9 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         
         int score = run_aspiration_search(g, depth, prev_score, &best_move, ia_player, start);
         
-        if (score == -2) { // Timeout
+        if (score == -2) { // Timeout PENDANT la recherche
             #ifdef DEBUG
-            printf("Timeout at depth %d. Keeping best move from depth %d.\n", depth, depth-2);
+            printf("Timeout during depth %d. Reverting to best move from depth %d.\n", depth, depth-2);
             #endif
             if (prev_best_move != -1) return prev_best_move;
             return best_move;
@@ -124,11 +124,36 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
 
         if (score > WIN_SCORE - 5000) {
             #ifdef DEBUG
-            printf("Winning move found at depth %d.\n", depth);
+            printf("Potential winning move found at depth %d. Verifying...\n", depth);
+            #endif
+            
+            // OPTIMISATION : Si on trouve une victoire très tôt (depth < 10), 
+            // on continue quand même un peu pour être sûr que ce n'est pas une gaffe
+            // due à un horizon effect (l'adversaire a une menace juste après).
+            if (depth < 12 && (double)(clock() - start) / CLOCKS_PER_SEC < allocated_time * 0.3) {
+                // On a encore beaucoup de temps, on continue de creuser pour confirmer
+                prev_score = score;
+                continue; 
+            }
+            
+            // Si c'est profond ou qu'on manque de temps, on accepte la victoire
+            break;
+        }
+
+        // --- GESTION DYNAMIQUE DU TEMPS ---
+        double time_taken = (double)(clock() - start) / CLOCKS_PER_SEC;
+        
+        // AVANT : if (time_taken > allocated_time / 2.0) break;
+        // C'était prudent (facteur de branchement estimé à 2, ce qui est faible).
+        
+        // OPTIMISATION : On peut pousser un peu plus.
+        // Si on a utilisé moins de 60% du temps, on tente la profondeur suivante.
+        if (time_taken > allocated_time * 0.60) {
+            #ifdef DEBUG
+            printf("Stopping ID: Time used %.3fs / %.3fs\n", time_taken, allocated_time);
             #endif
             break;
         }
-        if ((clock() - start) * 1000 / CLOCKS_PER_SEC > TIME_LIMIT_MS) break;
     }
     return best_move;
 }
@@ -167,27 +192,22 @@ void makeIaMove(game *gameData, screen *windows) {
     int ia_player = gameData->turn;
     int best_move = -1;
 
+    // === CORRECTION CRITIQUE 1 : MISE À JOUR IMMÉDIATE ===
+    // On met à jour les menaces (Open 3, 4...) basées sur le dernier coup adverse
+    refresh_board_stats(gameData);
+    // =====================================================
+
     // --- PHASE 0 : VICTOIRE IMMÉDIATE ---
-    // Si on peut gagner tout de suite, on le fait. Pas besoin de réfléchir.
     MoveCandidate moves[MAX_BOARD];
-    // On demande à generate_moves de nous donner les coups
-    // Note: Assure-toi que generate_moves vérifie le Double Three OU qu'on le vérifie ici.
     int count = generate_moves(gameData, moves, ia_player, 0, -1);
     
-    // On parcourt les meilleurs coups (pas juste le premier !)
     for (int i = 0; i < count && i < 5; i++) {
-        // Si le coup mène à une victoire ou une menace très forte
         if (moves[i].score_estim >= WIN_SCORE - 10000) {
-            
-            // VERIFICATION CRITIQUE : EST-CE UN COUP LÉGAL ?
             if (is_double_three(gameData, moves[i].index, ia_player)) {
-                // Si c'est interdit, on l'ignore et on continue de chercher
                 printf(">>> Coup (%d,%d) ignoré (Double-Three interdit)\n", 
                        GET_X(moves[i].index), GET_Y(moves[i].index));
                 continue; 
             }
-            
-            // Si c'est légal, on le joue !
             best_move = moves[i].index;
             printf(">>> VICTOIRE IMMÉDIATE DÉTECTÉE (Coup Légal).\n");
             goto play_move;
@@ -195,14 +215,11 @@ void makeIaMove(game *gameData, screen *windows) {
     }
 
     // --- PHASE 0.1 : VICTOIRE IMMÉDIATE PAR CAPTURE ---
-    // Si JE peux gagner en capturant, je le fais !
     MoveCandidate cap_moves[MAX_BOARD];
     int cap_count = generate_moves(gameData, cap_moves, ia_player, 0, -1);
     for (int i = 0; i < cap_count; i++) {
-        // Si ce coup est une capture (marqué par generate_moves)
         if (cap_moves[i].is_capture) {
-            // Combien de paires je capture ?
-            int captures = check_capture_count(gameData, cap_moves[i].index, ia_player); // Assurez-vous que cette fonction retourne le nb de paires
+            int captures = check_capture_count(gameData, cap_moves[i].index, ia_player);
             if (gameData->captures[ia_player] + captures >= 5) {
                  best_move = cap_moves[i].index;
                  printf(">>> VICTOIRE PAR CAPTURE DÉTECTÉE (Coup Fatal).\n");
@@ -211,38 +228,34 @@ void makeIaMove(game *gameData, screen *windows) {
         }
     }
 
-    // --- PHASE 0.2 : DÉFAITE IMMÉDIATE PAR CAPTURE (Urgence Absolue) ---
-    // Si l'adversaire a 4 captures (ou plus), on vérifie s'il peut en faire une 5ème.
+    // --- PHASE 0.2 : DÉFAITE IMMÉDIATE PAR CAPTURE ---
     int opponent = (ia_player == P1) ? P2 : P1;
     if (gameData->captures[opponent] >= 4) {
-        // On génère les coups de l'adversaire pour voir s'il peut gagner
-        // C'est un mini "pré-calcul" défensif
-        int danger_idx = -1;
-        
-        // On scanne les coups adverses possibles
-        // Optimisation : on utilise count_vulnerable_pairs pour savoir OÙ chercher
-        // Mais pour faire simple et sûr : on check si une de NOS paires est vulnérable
         if (count_vulnerable_pairs(gameData, ia_player) > 0) {
              printf(">>> DANGER CRITIQUE : Adversaire va gagner par capture !\n");
-             // On laisse le Minimax gérer car c'est complexe de savoir QUEL coup bloque la capture
-             // MAIS on booste artificiellement la profondeur ou on force une recherche défensive.
-             
-             // Astuce : On retourne un score de -WIN dans l'évaluation (fait à l'étape 1)
-             // Ce bloc ici sert juste de log pour vous confirmer la détection.
+             // On force la main à la phase de crise pour qu'elle trouve une parade
+             gameData->in_crisis = true; 
+             gameData->crisis_level = 3; 
         }
     }
 
-    // --- PHASE 0.5 : VCF OFFENSIF (Tenter de gagner maintenant) ---
-    // C'est ici que l'IA devient "Tueuse". Si elle a une ouverture, elle l'exploite
-    // AVANT de se soucier de la défense (car elle joue en premier).
-    
-    // On ne lance ça que si on a du potentiel d'attaque (au moins un Open 3)
-    // Cela évite de perdre du temps en début de partie.
+    // --- PHASE 0.5 : VCF OFFENSIF SÉCURISÉ ---
     if (gameData->max_threat_level[ia_player] >= IDX_OPEN_THREE) {
         int winning_move = find_winning_vcf(gameData, ia_player);
         if (winning_move != -1) {
-            // Vérification de sécurité finale (Double Three)
-            if (!is_double_three(gameData, winning_move, ia_player)) {
+            bool safe = true;
+            if (is_double_three(gameData, winning_move, ia_player)) safe = false;
+            
+            if (safe && gameData->captures[opponent] >= 4) {
+                if (!check_five_align(gameData, winning_move, ia_player)) {
+                    if (is_move_capturable(gameData, winning_move, ia_player)) {
+                        safe = false; 
+                        printf(">>> VCF ANNULÉ : Coup suicidaire (Capture) !\n");
+                    }
+                }
+            }
+
+            if (safe) {
                 best_move = winning_move;
                 printf(">>> VCF OFFENSIF TROUVÉ ! Victoire forcée enclenchée.\n");
                 goto play_move;
@@ -250,12 +263,15 @@ void makeIaMove(game *gameData, screen *windows) {
         }
     }
 
+    // === CORRECTION CRITIQUE 2 : REORDONNANCEMENT ===
+    // La Phase 1 (Survie/Crise) DOIT passer AVANT la Phase 0.6 (Fourchette)
+    // On ne bloque pas une fourchette si on a un pistolet sur la tempe (Open 4).
+
     // --- PHASE 1 : FILET DE SÉCURITÉ (DEFENSIVE STRICT VCF) ---
-    // Avant de lancer le lourd Minimax, on vérifie si on est en danger de mort subite.
-    // On ne le fait que si l'adversaire a des menaces visibles (optimisation)
     int opp_threat_level = (ia_player == P1) ? gameData->max_threat_level[P2] : gameData->max_threat_level[P1];
     
-    if (opp_threat_level >= IDX_OPEN_THREE) { // Si l'adversaire a au moins un Open 3
+    // Si menace forte OU crise détectée précédemment (ex: captures)
+    if (opp_threat_level >= IDX_OPEN_THREE || gameData->in_crisis) {
         int save_move = solve_defensive_crisis(gameData, ia_player);
         
         if (save_move >= 0) {
@@ -263,15 +279,69 @@ void makeIaMove(game *gameData, screen *windows) {
             printf(">>> IA joue le coup de SAUVETAGE (VCF Block).\n");
             goto play_move;
         } else if (save_move == -2) {
-            // Mort certaine détectée. On laisse le Minimax essayer de trouver le chemin le plus long 
-            // ou on joue le meilleur coup heuristique pour l'honneur.
             printf(">>> Mode Survie (Désespéré).\n");
         }
     }
 
+    // --- PHASE 0.6 : DÉTECTION FOURCHETTE ADVERSE (Maintenant après la survie) ---
+    // On ne cherche à bloquer les fourchettes que si on n'est PAS en crise mortelle
+    if (!gameData->in_crisis) {
+        MoveCandidate opp_moves[MAX_BOARD];
+        int opp_count = generate_moves(gameData, opp_moves, opponent, 0, -1);
+
+        for (int i = 0; i < opp_count && i < 10; i++) { 
+            int idx = opp_moves[i].index;
+            int fork_value = compute_fork_value(gameData, idx, opponent);
+            
+            if (fork_value > 0) {
+                if (!is_double_three(gameData, idx, ia_player)) {
+                    printf(">>> BLOCAGE PRÉVENTIF DE FOURCHETTE en (%d,%d)\n", 
+                        GET_X(idx), GET_Y(idx));
+                    best_move = idx;
+                    goto play_move;
+                }
+            }
+        }
+    }
+
     // --- PHASE 2 : MINIMAX CLASSIQUE ---
-    refresh_board_stats(gameData);
+    // (refresh_board_stats a déjà été fait au début, c'est bon)
     best_move = run_iterative_deepening(gameData, ia_player, start);
+
+    if (best_move != -1 && is_double_three(gameData, best_move, ia_player)) {
+        // Fallback coup illégal... (Code existant)
+    }
+    
+    // ... (Code fallback existant) ...
+
+    MoveCandidate emergency_moves[MAX_BOARD];
+    int emergency_count = generate_moves(gameData, emergency_moves, ia_player, 0, -1);
+    
+    // Fallback si Minimax échoue ou retourne un coup illégal
+    bool move_validated = false;
+    if (best_move != -1 && !is_double_three(gameData, best_move, ia_player)) {
+        move_validated = true;
+    }
+
+    if (!move_validated) {
+        best_move = -1;
+        for (int i = 0; i < emergency_count; i++) {
+            if (!is_double_three(gameData, emergency_moves[i].index, ia_player)) {
+                best_move = emergency_moves[i].index;
+                break;
+            }
+        }
+    }
+    
+    if (best_move == -1) {
+        printf("    ❌ CATASTROPHE : Aucun coup légal trouvé !\n");
+        for (int idx = 0; idx < MAX_BOARD; idx++) {
+            if (gameData->board[idx] == EMPTY) {
+                best_move = idx;
+                break;
+            }
+        }
+    }
 
 play_move:
     finalize_move(gameData, windows, best_move, ia_player, start, false);

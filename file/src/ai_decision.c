@@ -220,44 +220,74 @@ static int find_vcf_move(game *g, int ia_player, clock_t start_time) {
 
 int make_tactical_decision(game *g, int ia_player, clock_t start_time) {
     (void)start_time;
+    
+    update_crisis_state(g, ia_player);
 
-    // 1. VICTOIRE IMMÉDIATE (Absolue priorité)
+    // 1. VICTOIRE IMMÉDIATE (inchangé)
     int win_align = find_winning_alignment(g, ia_player);
     if (win_align != -1) return win_align;
 
     int win_capture = find_winning_capture(g, ia_player);
     if (win_capture != -1) return win_capture;
 
-    // 2. DÉFAITE IMMÉDIATE (Si l'adversaire gagne au prochain coup)
-    // On laisse le Minimax gérer le blocage SAUF si on peut contre-attaquer par VCF.
-    // C'est la seule "Règle" utile de l'alternative : Counter-Attack > Block.
-    
-    int opponent = (ia_player == P1) ? P2 : P1;
-    int opp_threat_lvl = g->max_threat_level[opponent]; // Utiliser vos buckets
-    
-    // Si l'adversaire menace de gagner (Open 4 ou Win), on tente le VCF avant de bloquer
-    if (opp_threat_lvl >= IDX_OPEN_FOUR) {
-        int my_threat_lvl = g->max_threat_level[ia_player];
+    // ===== NOUVEAU : THREAT SPACE SEARCH EN CRISE =====
+    if (g->in_crisis && g->crisis_level >= 2) {
+        // Tentative de défense par Threat Space
+        int defense = find_best_defense_with_threat_space(g, ia_player);
         
-        // Si j'ai aussi du potentiel, je tente le "VCF Counter"
-        if (my_threat_lvl >= IDX_OPEN_THREE) {
-             int vcf_move = find_vcf_move(g, ia_player, start_time);
-             if (vcf_move != -1) return vcf_move; // La meilleure défense c'est l'attaque
+        if (defense != -1) {
+            #ifdef DEBUG
+            printf(">>> THREAT SPACE DEFENSE : Coup (%d,%d) sélectionné\n",
+                   GET_X(defense), GET_Y(defense));
+            #endif
+            
+            // Vérifier que ce n'est pas un suicide
+            MoveUndo undo;
+            apply_move(g, defense, ia_player, &undo);
+            
+            int opponent = (ia_player == P1) ? P2 : P1;
+            bool still_has_win = false;
+            
+            for (int i = 0; i < MAX_BOARD && !still_has_win; i++) {
+                if (is_winning_threat(g, i, opponent)) {
+                    still_has_win = true;
+                }
+            }
+            
+            undo_move(g, ia_player, &undo);
+            
+            if (!still_has_win) {
+                return defense; // Défense réussie !
+            }
         }
         
-        // Si pas de VCF, on retourne -1 -> Le Minimax trouvera le meilleur blocage
+        // Si Threat Space échoue, tenter VCF offensif (contre-attaque)
+        int my_threat_lvl = g->max_threat_level[ia_player];
+        if (my_threat_lvl >= IDX_OPEN_THREE) {
+            int vcf_move = find_vcf_move(g, ia_player, start_time);
+            if (vcf_move != -1) return vcf_move;
+        }
+    }
+    // ====================================================
+
+    // 2. VCF OFFENSIF (si pas de crise)
+    int opponent = (ia_player == P1) ? P2 : P1;
+    int opp_threat_lvl = g->max_threat_level[opponent];
+    
+    if (opp_threat_lvl >= IDX_OPEN_FOUR && !g->in_crisis) {
+        int my_threat_lvl = g->max_threat_level[ia_player];
+        if (my_threat_lvl >= IDX_OPEN_THREE) {
+             int vcf_move = find_vcf_move(g, ia_player, start_time);
+             if (vcf_move != -1) return vcf_move;
+        }
         return -1; 
     }
 
-    // 3. VCF OFFENSIF (Si pas de menace immédiate adverse)
-    // On tente de finir la partie si on a une ouverture
     int my_threat_lvl = g->max_threat_level[ia_player];
-    
     if (my_threat_lvl >= IDX_OPEN_THREE) { 
         int vcf_move = find_vcf_move(g, ia_player, start_time);
         if (vcf_move != -1) return vcf_move;
     }
 
-    // 4. Sinon, laisser le Minimax faire son travail positionnel
     return -1; 
 }

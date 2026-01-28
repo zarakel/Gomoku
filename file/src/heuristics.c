@@ -522,6 +522,32 @@ void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
     }
 }
 
+// Ajoute cette fonction helper
+int count_overlapping_threats(game *g, int player) {
+    int threats = 0;
+    // On parcourt les lignes pré-calculées par ai_data.c (ou on scanne léger)
+    // Ici, une heuristique simplifiée : 
+    // On regarde les cases vides qui ont plus d'une ligne active pour le joueur.
+    
+    // NOTE : Cela suppose que tu as accès aux données 'lines' ou que tu scannes.
+    // Si tu n'as pas de structure complexe, on va faire un scan heuristique rapide 
+    // sur les coups possibles de l'adversaire.
+    
+    // Version simplifiée : On compte combien de Open Threes l'adversaire a.
+    // Si > 1, c'est une fourchette potentielle.
+    int open_threes = 0;
+    int blocked_fours = 0; // Menace Closed Four
+    
+    // On utilise les données que tu as déjà dans g->max_threat_level ?
+    // Non, max_threat_level donne juste le MAX. On a besoin du COMPTE.
+    
+    // Il faudrait idéalement une fonction qui retourne le NOMBRE de menaces de niveau 3/4.
+    // Si cette info n'est pas dispo dans 'game', on l'estime via le score positionnel
+    // ou on modifie ai_data.c pour compter les menaces.
+    
+    return 0; // Placeholder si pas implémentable facilement
+}
+
 /*
  * Nouvelle version O(1) de evaluate_board
  * Elle utilise les valeurs pré-calculées.
@@ -529,112 +555,90 @@ void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
 int evaluate_board(game *g, int player) {
     int opponent = (player == P1) ? P2 : P1;
 
-    // 1. VICTOIRES ABSOLUES (Seules raisons valables d'arrêter la recherche)
-    // Alignement de 5 détecté
+    // --- 1. VICTOIRES ABSOLUES (O(1)) ---
+    // On garde les retours immédiats ici, car si on a gagné/perdu, inutile de compter les points.
     if (g->max_threat_level[player] == IDX_WIN) return WIN_SCORE;
     if (g->max_threat_level[opponent] == IDX_WIN) return -WIN_SCORE;
     
-    // Victoire par capture (Règle Pente)
     if (g->captures[player] >= 5) return WIN_SCORE;
     if (g->captures[opponent] >= 5) return -WIN_SCORE;
 
-    // 2. Score Positionnel de Base (O(1))
+    // --- 2. Score Positionnel de Base (O(1)) ---
+    // Utilisation de long long obligatoire pour les calculs intermédiaires
     long long final_score = g->pos_score[player] - g->pos_score[opponent];
 
-    // 3. GESTION DES MENACES (PANIC MODE CORRIGÉ)
-    // Au lieu de retourner -WIN_SCORE, on applique une pénalité massive.
-    
+    // --- 3. GESTION DES MENACES (O(1)) ---
     int opp_threat_lvl = g->max_threat_level[opponent];
     int my_threat_lvl = g->max_threat_level[player];
 
     if (opp_threat_lvl >= IDX_OPEN_FOUR) {
-        // C'est quasi perdu (Open 4 = victoire au prochain tour), 
-        // MAIS on laisse une chance au VCF ou à une capture désespérée.
-        // Pénalité : 1.5 Milliards (WIN_SCORE = 2 Mrds)
-        final_score -= 1500000000; 
+        final_score -= 900000000; 
     } 
     else if (opp_threat_lvl >= IDX_CLOSED_FOUR) {
-        // Force une défense immédiate.
-        // Pénalité : 800 Millions
-        final_score -= 800000000;
+        final_score -= 600000000;
     } 
     else if (opp_threat_lvl >= IDX_OPEN_THREE) {
-        // Menace sérieuse, doit être gérée.
-        // Pénalité : 400 Millions
+        // MODIFICATION ICI :
+        // Un Open 3 est souvent mortel (mène à un Open 4).
+        // Si on n'a pas nous-même une victoire IMMÉDIATE (Open 4 ou 5),
+        // on DOIT le traiter comme une urgence absolue.
         
-        // Si on a nous-même une menace forte, on panique moins (contre-attaque possible)
-        if (my_threat_lvl >= IDX_CLOSED_FOUR) {
-             final_score -= 200000000; // Moitié moins grave si on attaque aussi
-        } else {
-             final_score -= 400000000;
+        if (my_threat_lvl >= IDX_OPEN_FOUR) {
+            // On a une attaque imparable, on peut ignorer son Open 3
+            final_score -= 50000000; 
+        } 
+        else if (my_threat_lvl >= IDX_CLOSED_FOUR) {
+            // On a une menace forte, c'est une course.
+            final_score -= 200000000;
+        } 
+        else {
+            // On n'a rien. Son Open 3 est virtuellement une défaite si on ne bloque pas.
+            // On augmente massivement la pénalité pour forcer le blocage.
+            final_score -= 550000000; // Augmenté de 300M/400M à 550M
         }
-    } 
-    else if (opp_threat_lvl == IDX_CLOSED_THREE) {
-        final_score -= CLOSED_THREE * 2;
     }
 
-    // 4. GESTION DES CAPTURES ADVERSES (Menace Pente)
+    // --- 4. GESTION DES CAPTURES ADVERSES (Optimisation O(N) -> "Lazy") ---
     int opp_caps = g->captures[opponent];
 
-    // On compte combien de nos paires sont en danger immédiat
-    int my_vulnerable = count_vulnerable_pairs(g, player);
-    
-    // Une paire vulnérable, c'est presque une paire perdue.
-    // On pénalise CHAQUE paire vulnérable.
-    final_score -= (my_vulnerable * 15000000); // -15 Millions par paire en danger
-
+    // OPTIMISATION CRITIQUE : 
+    // Ne lancer count_vulnerable_pairs (qui est lent) QUE si c'est critique (captures >= 3).
+    // Sinon, on perd trop de temps pour rien en début de partie.
     if (opp_caps >= 3) {
-        // Si on a déjà perdu 3 paires, on ne peut plus se permettre d'en laisser trainer
-        final_score -= (my_vulnerable * 100000000); // -100M (Urgence)
-    }
-    if (opp_caps >= 4 && my_vulnerable > 0) {
-        // Si on est à 4 captures et qu'une est vulnérable => C'est virtuellement PERDU
-        final_score -= 1000000000; // -1 Milliard (Panique totale)
+        int my_vulnerable = count_vulnerable_pairs(g, player);
+        
+        if (my_vulnerable > 0) {
+            // Pénalité de base pour la vulnérabilité
+            final_score -= (my_vulnerable * 20000000); 
+
+            if (opp_caps >= 4) {
+                // DANGER MORTEL : 4 captures + 1 vulnérable = Défaite virtuelle
+                // On applique une pénalité similaire à un Open Four adverse
+                final_score -= 950000000; 
+            } else {
+                // 3 captures + vulnérable = Très dangereux
+                final_score -= 200000000;
+            }
+        }
     }
     
-    if (opp_caps == 4) {
-        // Danger mortel : Une seule capture et c'est fini.
-        // Pénalité massive pour fuir les configurations où on donne une paire.
-        final_score -= 1200000000; 
-    }
-    else if (opp_caps == 3) {
-        final_score -= 300000000;
-    }
-    else if (opp_caps == 2) {
-        final_score -= 50000000;
-    }
-
-    // 5. Bonus de Captures (Offensif)
+    // Pénalité statique pour le score de captures (pression psychologique sur l'IA)
+    if (opp_caps == 4) final_score -= 100000000; // Peur latente même sans vulnérabilité immédiate
+    
+    // --- 5. Bonus de Captures (Offensif) ---
     final_score += (g->captures[player] * CAPTURE_BONUS); 
     final_score -= (g->captures[opponent] * CAPTURE_BONUS);
 
-    /* * DÉTECTION VCF (Optionnelle, coûteuse)
-     * On ne la garde que si on veut VRAIMENT prouver la défaite.
-     * Pour l'instant, on la désactive pour éviter l'élagage dépressif, 
-     * sauf si on est en fin de partie (profondeur élevée).
-     */
-    // if (opp_threat_lvl >= OPEN_THREE && ...) { ... }  <-- SUPPRIMÉ pour l'instant
+    // --- 6. CLAMPING DE SÉCURITÉ (Anti-Overflow) ---
+    // C'est ici qu'on évite le bug des "Milliards".
+    // On s'assure que le score reste dans les bornes [-WIN_SCORE + marge, WIN_SCORE - marge]
+    // La marge (1000) permet à l'Alpha-Beta de voir que c'est "mieux" qu'une défaite immédiate.
+    
+    long long max_val = WIN_SCORE - 1000;
+    long long min_val = -WIN_SCORE + 1000;
 
-    // Clamp final pour éviter de dépasser WIN_SCORE par accident
-    if (final_score >= WIN_SCORE) final_score = WIN_SCORE - 100;
-    if (final_score <= -WIN_SCORE) final_score = -WIN_SCORE + 100;
-
-    /* DÉTECTION DES FOURCHETTES (FORKS) ADVERSES */
-    // On garde ça, c'est purement statique et rapide
-    /*
-    if (final_score > -1000000000) { // Inutile de calculer si on est déjà mort
-        int fork_penalty = 0;
-        for (int i = 0; i < MAX_BOARD; i++) {
-            if (g->board[i] != EMPTY) continue;
-            int val = compute_fork_value(g, i, opponent);
-            if (val > 0) {
-                fork_penalty = 1400000000; // -1.4 Milliards
-                break;
-            }
-        }
-        final_score -= fork_penalty;
-    }
-    */
+    if (final_score >= WIN_SCORE) final_score = max_val;
+    if (final_score <= -WIN_SCORE) final_score = min_val;
 
     return (int)final_score;
 }

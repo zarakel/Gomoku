@@ -55,6 +55,8 @@ static int quiescence_search(game *g, int alpha, int beta, int ia_player, int qs
         }
         
         int idx = moves[i].index;
+
+        if (is_double_three(g, idx, ia_player)) continue;
         
         // Simulation du coup
         MoveUndo undo;
@@ -112,6 +114,30 @@ int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int 
     int current_player = maximizingPlayer ? ia_player : ((ia_player == P1) ? P2 : P1);
 
     int current_eval = evaluate_board(g, ia_player);
+
+    // Si on détecte une "défaite certaine", on vérifie qu'elle est réelle
+    if (abs(current_eval) >= WIN_SCORE - 100) {
+        // Est-ce vraiment une défaite IMMÉDIATE ?
+        int opponent = (ia_player == P1) ? P2 : P1;
+        
+        bool opponent_can_win_now = false;
+        for (int i = 0; i < MAX_BOARD && !opponent_can_win_now; i++) {
+            if (g->board[i] != EMPTY) continue;
+            
+            g->board[i] = opponent;
+            int test_score = get_point_score(g, GET_X(i), GET_Y(i), opponent);
+            g->board[i] = EMPTY;
+            
+            if (test_score >= WIN_SCORE) {
+                opponent_can_win_now = true;
+            }
+        }
+        
+        // Si l'adversaire NE PEUT PAS gagner immédiatement, on réduit le score
+        if (!opponent_can_win_now && current_eval < 0) {
+            current_eval = -OPEN_FOUR; // Danger mais pas mort
+        }
+    }
 
     // Si victoire/défaite ABSOLUE (Alignement de 5 ou 5 Captures)
     // Note : On utilise WIN_SCORE - 100 pour laisser une marge aux pénalités
