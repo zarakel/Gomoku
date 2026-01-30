@@ -286,7 +286,7 @@ Une recherche avec `[−∞, +∞]` explore beaucoup de branches inutiles car la
 On suppose que le score de Depth N sera proche du score de Depth N-2 :
 
 ```c
-int window = 500;
+int window = 1000;
 int alpha = prev_score - window;  // Ex: -10000 - 500 = -10500
 int beta = prev_score + window;   // Ex: -10000 + 500 = -9500
 ```

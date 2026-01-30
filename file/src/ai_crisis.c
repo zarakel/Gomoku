@@ -14,27 +14,26 @@
  */
 
 /*
- * Analyse une position pour détecter si c'est un coup gagnant adverse
+ * Vérifie si 'idx' est un coup gagnant immédiat pour 'opponent'
  */
 bool is_winning_threat(game *g, int idx, int opponent) {
     if (g->board[idx] != EMPTY) return false;
     
-    // Test victoire par alignement
+    // 1. Victoire par alignement (5)
     g->board[idx] = opponent;
     int score = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
     g->board[idx] = EMPTY;
     
     if (score >= WIN_SCORE) return true;
     
-    // Test victoire par capture
+    // 2. Victoire par capture (si règle active)
     if (g->captures[opponent] >= 4) {
         int caps = count_potential_captures(g, GET_X(idx), GET_Y(idx), opponent);
-        if (g->captures[opponent] + (caps / 2) >= 5) return true;
+        if (g->captures[opponent] + (caps / 2) >= 5) return true; // (caps/2 car count retourne le nombre de pierres)
     }
     
     return false;
 }
-
 /*
  * Compte les menaces sérieuses de l'adversaire
  */
@@ -86,36 +85,33 @@ static int count_immediate_threats(game *g, int opponent, int *threat_moves) {
 
 /*
  * Analyse la situation et met à jour le crisis state
- */
+*/
+
 void update_crisis_state(game *g, int ia_player) {
     int opponent = (ia_player == P1) ? P2 : P1;
     
-    // Reset
     g->in_crisis = false;
     g->crisis_level = 0;
     g->crisis_move_count = 0;
     
-    // 1. Check victoire immédiate adverse
+    // 1. VICTOIRE IMMÉDIATE ADVERSE (Urgence absolue)
     int winning_moves = 0;
-    for (int i = 0; i < MAX_BOARD && winning_moves < 10; i++) {
-        if (is_winning_threat(g, i, opponent)) {
+    
+    // Optimisation : Scanner uniquement les cases autour des pierres existantes ?
+    // Pour la sûreté, on scanne tout le board ici (c'est rapide, juste un check)
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] == EMPTY && is_winning_threat(g, i, opponent)) {
             g->crisis_moves[winning_moves++] = i;
+            if (winning_moves >= 10) break;
         }
     }
     
     if (winning_moves > 0) {
         g->in_crisis = true;
         g->crisis_move_count = winning_moves;
-        
-        if (winning_moves == 1) {
-            g->crisis_level = 2; // Une seule menace de mort (bloquable)
-        } else {
-            g->crisis_level = 3; // Plusieurs menaces = mort quasi-certaine
-        }
-        
+        g->crisis_level = (winning_moves == 1) ? 2 : 3; // 3 = Mort quasi certaine (double menace)
         #ifdef DEBUG
-        printf(">>> CRISE NIVEAU %d : %d coup(s) gagnant(s) détecté(s) pour l'adversaire\n", 
-               g->crisis_level, winning_moves);
+        printf(">>> CRISE NIVEAU %d : %d coup(s) gagnant(s) détecté(s) !\n", g->crisis_level, winning_moves);
         #endif
         return;
     }
@@ -124,52 +120,72 @@ void update_crisis_state(game *g, int ia_player) {
     int open_four_count = count_immediate_threats(g, opponent, g->crisis_moves);
     g->crisis_move_count = open_four_count;
     
-    if (open_four_count >= 2) {
+    if (open_four_count > 0) {
         g->in_crisis = true;
-        g->crisis_level = 3; // Double Open 4 = perdu
+        g->crisis_move_count = open_four_count;
+        g->crisis_level = (open_four_count >= 2) ? 3 : 2;
         #ifdef DEBUG
-        printf(">>> CRISE NIVEAU 3 : %d Open Four adverses détectés\n", open_four_count);
+        printf(">>> CRISE NIVEAU %d : %d Open Four adverses détectés\n", g->crisis_level, open_four_count);
         #endif
         return;
     }
     
-    if (open_four_count == 1) {
-        g->in_crisis = true;
-        g->crisis_level = 2; // Un Open 4 = très dangereux
-        #ifdef DEBUG
-        printf(">>> CRISE NIVEAU 2 : Open Four adverse détecté\n");
-        #endif
-        return;
-    }
-    
-    // 3. Check menaces moyennes (multiple Open 3)
+    // 3. Check menaces moyennes (Open 3) -> AJOUT CRITIQUE ICI
+    // Si aucune menace mortelle, on cherche les Open 3 pour les ajouter à la liste de crise
     int open_three_count = g->threat_counts[opponent][IDX_OPEN_THREE];
     
-    if (open_three_count >= 2) {
-        g->in_crisis = true;
-        g->crisis_level = 1; // Double Open 3 = préoccupant
-        #ifdef DEBUG
-        printf(">>> CRISE NIVEAU 1 : %d Open Three adverses\n", open_three_count);
-        #endif
-        return;
+    if (open_three_count > 0) {
+        // On doit scanner le plateau pour TROUVER où sont ces Open 3
+        int count_found = 0;
+        
+        // Scan rapide pour localiser les menaces
+        // (On réutilise la logique de count_immediate_threats mais avec un seuil plus bas)
+        int min_x = 0, max_x = BOARD_SIZE - 1, min_y = 0, max_y = BOARD_SIZE - 1; // Optimiser si besoin
+        
+        for (int y = min_y; y <= max_y; y++) {
+            for (int x = min_x; x <= max_x; x++) {
+                int idx = GET_INDEX(x, y);
+                if (g->board[idx] != EMPTY) continue;
+                
+                g->board[idx] = opponent;
+                int score = get_point_score(g, x, y, opponent);
+                g->board[idx] = EMPTY;
+                
+                // Si ce coup crée un Open 4, c'est qu'il complète un Open 3 existant !
+                // C'est donc le point vital à bloquer.
+                if (score >= OPEN_FOUR) {
+                    if (count_found < 10) {
+                        g->crisis_moves[count_found++] = idx;
+                    }
+                }
+            }
+        }
+        
+        if (count_found > 0) {
+            g->crisis_move_count = count_found;
+            g->in_crisis = true;
+            g->crisis_level = 1; // Niveau prudence
+            if (count_found >= 2) g->crisis_level = 2; // Double menace = Danger
+            
+            #ifdef DEBUG
+            printf(">>> CRISE NIVEAU %d : %d Open Three adverses localisés\n", g->crisis_level, count_found);
+            #endif
+            return;
+        }
     }
     
-    // 4. Check captures dangereuses
+    // 4. Check captures (Code existant inchangé...)
     if (g->captures[opponent] >= 4) {
         int vulnerable = count_vulnerable_pairs(g, ia_player);
         if (vulnerable > 0) {
             g->in_crisis = true;
             g->crisis_level = 2;
             #ifdef DEBUG
-            printf(">>> CRISE NIVEAU 2 : Adversaire à 4 captures (%d paires vulnérables)\n", vulnerable);
+            printf(">>> CRISE NIVEAU 2 : Adversaire à 4 captures\n");
             #endif
             return;
         }
     }
-    
-    // Pas de crise détectée
-    g->in_crisis = false;
-    g->crisis_level = 0;
 }
 
 /*
@@ -182,259 +198,172 @@ void update_crisis_state(game *g, int ia_player) {
 
 typedef struct {
     int idx;
-    int blocked_threats;    // Nombre de menaces bloquées
-    int attack_score;       // Score offensif du coup
-    int defense_score;      // Score défensif du coup
-    int combined_score;     // Score total
+    int blocked_threats;
+    int combined_score;
 } DefenseCandidate;
 
-static int compare_defense_candidates(const void *a, const void *b) {
-    DefenseCandidate *da = (DefenseCandidate *)a;
-    DefenseCandidate *db = (DefenseCandidate *)b;
-    return (db->combined_score - da->combined_score); // Décroissant
+static int compare_defense(const void *a, const void *b) {
+    return ((DefenseCandidate *)b)->combined_score - ((DefenseCandidate *)a)->combined_score;
 }
 
 /*
- * Trouve les cases qui bloquent une menace spécifique
+ * Trouve les cases qui bloquent physiquement une menace
  */
-static int find_blocking_moves_for_threat(game *g, int threat_idx, int opponent, int *blocking_moves) {
-    int count = 0;
+static void add_blocking_moves(game *g, int threat_idx, int ia_player, int *counts) {
+    int opponent = (ia_player == P1) ? P2 : P1;
     int x = GET_X(threat_idx);
     int y = GET_Y(threat_idx);
     
-    // La menace elle-même est toujours un blocage
-    blocking_moves[count++] = threat_idx;
-    
-    // Chercher d'autres points de blocage dans les 4 directions
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
     
+    // La case de menace elle-même est le meilleur blocage
+    counts[threat_idx] += 10; 
+    
     for (int d = 0; d < 4; d++) {
-        // Scanner dans les deux sens
         for (int k = -4; k <= 4; k++) {
             if (k == 0) continue;
-            
             int nx = x + dx[d] * k;
             int ny = y + dy[d] * k;
             
-            if (!IS_VALID(nx, ny)) continue;
-            
-            int idx = GET_INDEX(nx, ny);
-            if (g->board[idx] != EMPTY) continue;
-            
-            // Vérifier si jouer ici bloque la menace
-            g->board[idx] = opponent; // Simuler la menace
-            int threat_score = get_point_score(g, x, y, opponent);
-            g->board[idx] = EMPTY;
-            
-            // Si la menace disparaît ou diminue fortement
-            if (threat_score < OPEN_FOUR) {
-                // Éviter les doublons
-                bool already_added = false;
-                for (int j = 0; j < count; j++) {
-                    if (blocking_moves[j] == idx) {
-                        already_added = true;
-                        break;
-                    }
+            if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] == EMPTY) {
+                int idx = GET_INDEX(nx, ny);
+                
+                // Simulation : Si on joue là, est-ce que la menace diminue ?
+                g->board[idx] = opponent; // L'adversaire joue son coup menaçant
+                int score_before = get_point_score(g, x, y, opponent);
+                g->board[idx] = ia_player; // NOUS jouons le blocage
+                
+                // On vérifie le score de l'adversaire SI on bloque ici
+                // Attention: pour tester si ça bloque, on remet EMPTY et on re-test la menace ?
+                // Non, plus simple : on joue notre pierre. Est-ce que l'adversaire peut toujours gagner en (x,y) ?
+                
+                g->board[idx] = ia_player;
+                g->board[threat_idx] = opponent;
+                int score_after = get_point_score(g, x, y, opponent);
+                
+                // Si le score de la menace chute significativement
+                if (score_after < OPEN_FOUR && score_before >= OPEN_FOUR) {
+                    counts[idx] += 2; // Bon blocage
                 }
                 
-                if (!already_added && count < MAX_BOARD) {
-                    blocking_moves[count++] = idx;
-                }
+                // Reset
+                g->board[threat_idx] = EMPTY;
+                g->board[idx] = EMPTY;
             }
         }
     }
-    
-    return count;
 }
 
 /*
- * Trouve LE meilleur coup défensif en analysant l'espace des menaces
+ * LOGIQUE PRINCIPALE DE DÉFENSE
  */
 int find_best_defense_with_threat_space(game *g, int ia_player) {
     int opponent = (ia_player == P1) ? P2 : P1;
     
-    // 1. Identifier toutes les menaces actives
     if (g->crisis_move_count == 0) return -1;
+
+    int blocking_weights[MAX_BOARD];
+    memset(blocking_weights, 0, sizeof(blocking_weights));
     
-    // 2. Pour chaque menace, trouver ses points de blocage
-    int blocking_count[MAX_BOARD];
-    memset(blocking_count, 0, sizeof(blocking_count));
-    
+    // 1. Carte de chaleur des blocages
     for (int i = 0; i < g->crisis_move_count; i++) {
-        int threat_idx = g->crisis_moves[i];
-        int local_blocks[MAX_BOARD];
-        int local_count = find_blocking_moves_for_threat(g, threat_idx, opponent, local_blocks);
-        
-        for (int j = 0; j < local_count; j++) {
-            int block_idx = local_blocks[j];
-            blocking_count[block_idx]++;
-        }
+        add_blocking_moves(g, g->crisis_moves[i], ia_player, blocking_weights);
     }
     
-    // 3. Construire la liste des candidats défensifs
+    // 2. Génération des candidats
     DefenseCandidate candidates[MAX_BOARD];
-    int candidate_count = 0;
+    int cand_count = 0;
     
-    // ===== NOUVEAU : Liste de secours pour les coups légaux =====
-    int fallback_moves[MAX_BOARD];
-    int fallback_count = 0;
-    // ===========================================================
-    
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
-        if (blocking_count[idx] == 0) continue;
-        
-        // ===== MODIFICATION : Sauvegarder les coups légaux séparément =====
-        bool is_legal = !is_double_three(g, idx, ia_player);
-        
-        if (!is_legal) {
-            #ifdef DEBUG
-            printf("    ⚠️ Candidat défensif (%d,%d) rejeté (Double-Three)\n",
-                   GET_X(idx), GET_Y(idx));
-            #endif
-            continue; // On ignore ce coup interdit
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] == EMPTY && blocking_weights[i] > 0) {
+            // Rejet immédiat des coups illégaux
+            if (is_double_three(g, i, ia_player)) continue;
+            
+            candidates[cand_count].idx = i;
+            candidates[cand_count].blocked_threats = blocking_weights[i];
+            
+            // Score combiné : Poids du blocage + Potentiel offensif (contre-attaque)
+            g->board[i] = ia_player;
+            int atk = get_point_score(g, GET_X(i), GET_Y(i), ia_player);
+            g->board[i] = EMPTY;
+            
+            candidates[cand_count].combined_score = (blocking_weights[i] * 1000) + (atk / 100);
+            cand_count++;
         }
-        // ==================================================================
-        
-        DefenseCandidate *cand = &candidates[candidate_count++];
-        cand->idx = idx;
-        cand->blocked_threats = blocking_count[idx];
-        cand->defense_score = blocking_count[idx] * 1000000;
-        
-        g->board[idx] = ia_player;
-        cand->attack_score = get_point_score(g, GET_X(idx), GET_Y(idx), ia_player);
-        g->board[idx] = EMPTY;
-        
-        cand->combined_score = cand->defense_score + (cand->attack_score / 10);
-        
-        if (cand->blocked_threats == g->crisis_move_count) {
-            cand->combined_score += 10000000;
-        }
-        
-        // ===== NOUVEAU : Ajouter aussi à la liste de secours =====
-        fallback_moves[fallback_count++] = idx;
-        // ========================================================
     }
     
-    // ===== NOUVEAU : Gestion du cas "aucun candidat" =====
-    if (candidate_count == 0) {
-        #ifdef DEBUG
-        printf("    ⚠️ ALERTE : Tous les candidats défensifs créent des Double-Three !\n");
-        printf("    🔍 Recherche d'un coup légal de secours...\n");
-        #endif
-        
-        // Chercher un coup qui nous donne une victoire PLUS RAPIDE
-        for (int idx = 0; idx < MAX_BOARD; idx++) {
-            if (g->board[idx] != EMPTY) continue;
-            if (is_double_three(g, idx, ia_player)) continue;
-            
-            g->board[idx] = ia_player;
-            int our_score = get_point_score(g, GET_X(idx), GET_Y(idx), ia_player);
-            
-            // Si on crée un Open 4 ou mieux, on peut gagner avant eux
-            if (our_score >= OPEN_FOUR) {
-                g->board[idx] = EMPTY;
-                
-                #ifdef DEBUG
-                printf("    ✅ CONTRE-ATTAQUE trouvée : (%d,%d) (score: %d)\n",
-                    GET_X(idx), GET_Y(idx), our_score);
-                #endif
-                return idx;
-            }
-            
-            g->board[idx] = EMPTY;
-        }
-        
-        // Fallback 1 : Chercher N'IMPORTE QUEL coup légal qui réduit la menace
-        for (int idx = 0; idx < MAX_BOARD; idx++) {
-            if (g->board[idx] != EMPTY) continue;
-            if (is_double_three(g, idx, ia_player)) continue;
-            
-            // Tester si ce coup a un intérêt défensif quelconque
-            g->board[idx] = ia_player;
-            
-            // Recalculer les menaces adverses après notre coup
-            int remaining_threats = 0;
-            for (int i = 0; i < MAX_BOARD; i++) {
-                if (is_winning_threat(g, i, opponent)) {
-                    remaining_threats++;
-                }
-            }
-            
-            g->board[idx] = EMPTY;
-            
-            // Si ce coup réduit les menaces, on le prend
-            if (remaining_threats < g->crisis_move_count) {
-                return idx;
-            }
-        }
-        
-        // Fallback 2 : Si vraiment RIEN ne marche, jouer le coup le mieux noté heuristiquement
-        #ifdef DEBUG
-        printf("    ⚠️ Aucun coup défensif efficace trouvé. Utilisation de l'heuristique...\n");
-        #endif
-        
-        MoveCandidate emergency_moves[MAX_BOARD];
-        int emergency_count = generate_moves(g, emergency_moves, ia_player, 0, -1);
-        
-        for (int i = 0; i < emergency_count; i++) {
-            if (!is_double_three(g, emergency_moves[i].index, ia_player)) {
-                #ifdef DEBUG
-                printf("    🆘 Coup d'urgence : (%d,%d) (score: %d)\n",
-                       GET_X(emergency_moves[i].index), GET_Y(emergency_moves[i].index),
-                       emergency_moves[i].score_estim);
-                #endif
-                return emergency_moves[i].index;
-            }
-        }
-        
-        // Fallback 3 : Désespoir total — jouer n'importe où
-        #ifdef DEBUG
-        printf("    💀 SITUATION DÉSESPÉRÉE : Aucun coup légal efficace. Coup aléatoire.\n");
-        #endif
-        
-        for (int idx = 0; idx < MAX_BOARD; idx++) {
-            if (g->board[idx] == EMPTY && !is_double_three(g, idx, ia_player)) {
-                return idx;
-            }
-        }
-        
-        return -1; // Vraiment aucun coup possible (partie perdue)
-    }
-    // =======================================================
+    if (cand_count == 0) return -1; // Aucun blocage légal trouvé
     
-    // 4. Trier par score combiné
-    qsort(candidates, candidate_count, sizeof(DefenseCandidate), compare_defense_candidates);
+    // 3. Tri
+    qsort(candidates, cand_count, sizeof(DefenseCandidate), compare_defense);
     
     #ifdef DEBUG
-    printf(">>> THREAT SPACE : %d candidats défensifs trouvés\n", candidate_count);
-    printf("    Meilleur : (%d,%d) bloque %d menaces (score: %d)\n",
-           GET_X(candidates[0].idx), GET_Y(candidates[0].idx),
-           candidates[0].blocked_threats, candidates[0].combined_score);
+    printf(">>> THREAT SPACE : %d candidats. Top: (%d,%d)\n", cand_count, 
+           GET_X(candidates[0].idx), GET_Y(candidates[0].idx));
     #endif
+
+    // 4. VÉRIFICATION PARANOÏAQUE (La clé du correctif)
+    // On ne retourne un coup que s'il empêche VRAIMENT la défaite immédiate
     
-    // 5. Vérifier que le meilleur coup ne laisse pas une mort immédiate
-    int best_idx = candidates[0].idx;
-    
-    MoveUndo undo;
-    apply_move(g, best_idx, ia_player, &undo);
-    
-    bool still_losing = false;
-    for (int i = 0; i < MAX_BOARD && !still_losing; i++) {
-        if (is_winning_threat(g, i, opponent)) {
-            still_losing = true;
+    for (int i = 0; i < cand_count; i++) {
+        int idx = candidates[i].idx;
+        bool is_safe = true;
+        
+        MoveUndo undo;
+        apply_move(g, idx, ia_player, &undo);
+        
+        // CHECK 1 : Est-ce que l'adversaire a ENCORE un coup gagnant immédiat (5 alignés) ?
+        for (int k = 0; k < MAX_BOARD; k++) {
+            // Optimisation : On pourrait scanner seulement les cases vides voisines des pierres adverses
+            if (g->board[k] == EMPTY) {
+                if (is_winning_threat(g, k, opponent)) {
+                    is_safe = false;
+                    #ifdef DEBUG
+                    if (i==0) printf("    ❌ Refus (%d,%d) : L'adversaire gagne encore en (%d,%d)\n", 
+                                     GET_X(idx), GET_Y(idx), GET_X(k), GET_Y(k));
+                    #endif
+                    break;
+                }
+            }
+        }
+        
+        // CHECK 2 : (Si on n'est pas déjà mort) Est-ce qu'on lui laisse un Open 4 imparable ?
+        // Si on bloque un 4, mais qu'il en a un autre ailleurs, on a perdu quand même.
+        if (is_safe && g->crisis_level >= 2) {
+            int open_four_remaining = 0;
+             for (int k = 0; k < MAX_BOARD; k++) {
+                 if (g->board[k] == EMPTY) {
+                     g->board[k] = opponent;
+                     if (get_point_score(g, GET_X(k), GET_Y(k), opponent) >= OPEN_FOUR) {
+                         open_four_remaining++;
+                     }
+                     g->board[k] = EMPTY;
+                     if (open_four_remaining > 0) break;
+                 }
+             }
+             if (open_four_remaining > 0) {
+                 is_safe = false; // Ce coup ne nous sauve pas complètement
+             }
+        }
+
+        undo_move(g, ia_player, &undo);
+        
+        if (is_safe) {
+            #ifdef DEBUG
+            printf("    ✅ DÉFENSE VALIDÉE : (%d,%d)\n", GET_X(idx), GET_Y(idx));
+            #endif
+            return idx;
         }
     }
     
-    undo_move(g, ia_player, &undo);
+    // 5. BAROUD D'HONNEUR
+    // Si aucun coup ne nous sauve parfaitement, on joue le meilleur candidat heuristique
+    // (Peut-être que l'adversaire ne verra pas sa victoire)
+    #ifdef DEBUG
+    printf("    ⚠️ ECHEC DÉFENSE PARFAITE. Tentative désespérée en (%d,%d)\n", 
+           GET_X(candidates[0].idx), GET_Y(candidates[0].idx));
+    #endif
     
-    if (still_losing && candidate_count > 1) {
-        #ifdef DEBUG
-        printf("    Premier choix insuffisant, test du 2ème candidat\n");
-        #endif
-        return candidates[1].idx;
-    }
-    
-    return best_idx;
+    return candidates[0].idx;
 }

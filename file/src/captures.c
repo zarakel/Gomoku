@@ -78,9 +78,9 @@ void checkPieceCapture(game *gameData, screen *windows, int lx, int ly)
             gameData->board[idx] = EMPTY;
             
             // Mise à jour Graphique (Seulement si windows existe, pour compatibilité IA future)
-            // if (windows) {
+            if (windows) {
                 drawSquare(windows, GET_X(idx), GET_Y(idx), EMPTY);
-            // }
+            }
         }
 
         // Mise à jour Scores (Chaque paire vaut 1 point de capture)

@@ -30,7 +30,9 @@ void resetGame(game *gameData, screen *windows)
     gameData->crisis_move_count = 0;
     memset(gameData->crisis_moves, -1, sizeof(gameData->crisis_moves));
     // =========================================
-    
+
+    memset(transposition_table, 0, sizeof(transposition_table));
+
     resetTimer(&gameData->ia_timer);
     clear_heuristics();
     

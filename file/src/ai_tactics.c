@@ -2,7 +2,7 @@
 #include "../include/gomoku.h"
 
 #define VCF_MAX_DEPTH 20
-#define VCF_TIME_LIMIT 0.15 // 150ms max alloués à la panique défensive
+#define VCF_TIME_LIMIT 0.25 // 250ms max alloués à la panique défensive
 
 // Global cache (déclarer au début du fichier)
 static int vcf_cache[MAX_BOARD]; // -1 = non testé, 0 = échec, 1 = succès
@@ -80,8 +80,7 @@ static int generate_defensive_moves(game *g, int defender, MoveVCF *moves) {
 bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
     // 1. Check Limites
     if (depth > VCF_MAX_DEPTH) return false;
-    if ((double)(clock() - start_time) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) return false;
-
+    if ((double)(clock() - start_time) / CLOCKS_PER_SEC > 0.15) return false;
     int defender = (attacker == P1) ? P2 : P1;
 
     // 2. Check Victoire Immédiate (Déjà gagné ?)
@@ -153,8 +152,10 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
  * Fonction Wrapper pour l'extérieur
  */
 bool has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit) {
-    // Cette fonction sert juste d'interface si besoin
-    return vcf_search(g, attacker, 0, clock());
+    (void)max_depth; // Paramètre inutilisé pour l'instant
+    // Convertir time_limit_sec en clock ticks si nécessaire, ou utiliser clock()
+    // Ici on lance simplement la recherche avec le temps de départ actuel
+    return vcf_search(g, attacker, depth, clock());
 }
 
 static bool opponent_has_unstoppable_win(game *g, int opponent) {
@@ -171,106 +172,115 @@ int solve_defensive_crisis(game *g, int me) {
     int opponent = (me == P1) ? P2 : P1;
     clock_t start = clock();
 
-    // 1. Détection initiale : Est-ce qu'on va vraiment mourir ?
+    // 1. Détection : Est-ce qu'on va vraiment mourir ?
+    // On lance une recherche VCF pour l'adversaire
     bool threat_detected = vcf_search(g, opponent, 0, start);
-    if (!threat_detected) return -1;
+    
+    // Si pas de VCF détecté mais qu'on est en crise (niveau élevé), on continue quand même
+    // car le VCF search peut avoir raté quelque chose (profondeur limitée)
+    if (!threat_detected && g->max_threat_level[opponent] < IDX_OPEN_FOUR) {
+        return -1;
+    }
 
-    printf(">>> CRISE DÉTECTÉE : L'adversaire a un VCF ! Recherche de contre-mesure...\n");
+    printf(">>> CRISE DÉTECTÉE (Sauvetage Tactique) : Recherche de contre-mesure...\n");
 
     MoveCandidate candidates[MAX_BOARD];
     
-    // CHANGEMENT 1 : On passe '1' au lieu de '0' pour depth.
-    // Cela force generate_moves à utiliser un beam_width plus large (ex: 30 coups au lieu de 8).
-    // C'est CRITIQUE pour trouver des défenses subtiles que l'heuristique a mal classées.
-    int count = generate_moves(g, candidates, me, 1, -1); 
+    // CORRECTION MAJEURE 1 : Depth 0 (Root) pour avoir TOUS les coups, et faisceau LARGE
+    // On ne veut pas l'optimisation "beam search" ici, on veut la survie brute.
+    int count = generate_moves(g, candidates, me, 0, -1); 
 
     int best_save_idx = -1;
     int best_save_score = -1000000;
+    
+    // Compteur de coups testés pour debug
+    int tested_moves = 0;
 
     for (int i = 0; i < count; i++) {
-        // CHANGEMENT 2 : On baisse le filtre heuristique.
-        // En crise, un coup mal noté (ex: pierre isolée qui bloque une ligne lointaine) 
-        // peut être le seul sauveur. On ne filtre que les coups totalement inutiles (< 50).
-        if (candidates[i].score_estim < 50) continue; 
+        // CORRECTION MAJEURE 2 : Suppression du filtre heuristique agressif
+        // Un coup vital peut avoir un score statique nul (ex: blocage purement positionnel)
+        // On garde un filtre minimal pour le bruit absolu seulement
+        if (candidates[i].score_estim < 5) continue; 
 
         int idx = candidates[i].index;
         
+        // Règle Renju
         if (is_double_three(g, idx, me)) continue;
 
-        bool opp_is_unstoppable = opponent_has_unstoppable_win(g, opponent);
+        // Pré-check : Si l'adversaire a un Open 4, ce coup DOIT le bloquer
+        // (Optimisation pour éviter de lancer vcf_search si on ne bloque même pas la menace directe)
+        if (g->max_threat_level[opponent] >= IDX_OPEN_FOUR) {
+             // Simulation légère locale ?
+             // Pour l'instant on fait confiance au vcf_search complet plus bas
+        }
 
         MoveUndo undo;
         apply_move(g, idx, me, &undo);
+        tested_moves++;
 
-        // Si l'adversaire avait une victoire imparable (Open 4), 
-        // ce coup DOIT l'avoir détruite (en bloquant ou en gagnant nous-même).
-        if (opp_is_unstoppable) {
-            // On vérifie si l'adversaire a ENCORE sa victoire imparable après notre coup
-            // (On recalcul rapidement les menaces locales ou on check le score)
-            if (evaluate_board(g, opponent) >= WIN_SCORE || 
-                g->max_threat_level[opponent] >= IDX_OPEN_FOUR) {
-                
-                // Ce coup ne sauve pas, on l'annule et on passe au suivant
-                undo_move(g, me, &undo);
-                continue; 
-            }
-        }
-        
-        // A. Est-ce que JE gagne ? (La meilleure défense, c'est l'attaque)
+        // A. VICTOIRE IMMÉDIATE : Si je gagne, c'est la meilleure défense
         if (evaluate_board(g, me) >= WIN_SCORE) {
             undo_move(g, me, &undo);
             printf(">>> CONTRE-ATTAQUE GAGNANTE en (%d,%d)\n", GET_X(idx), GET_Y(idx));
             return idx;
         }
 
-        // B. Est-ce que ce coup brise le VCF ?
+        // B. EST-CE QUE CE COUP BRISE LE VCF ADVERSE ?
+        // On relance la recherche pour l'adversaire avec NOTRE pierre sur le plateau
         bool threat_persists = vcf_search(g, opponent, 0, start);
         
-        // C. VÉRIFICATION DE SÉCURITÉ
-        // Le coup a cassé le VCF, mais a-t-on laissé une victoire "statique" (ex: alignement de 5 immédiat) ?
+        // C. VERIFICATION "STUPID DEATH"
+        // Le VCF est brisé, mais a-t-on laissé un alignement de 5 statique ou un Open 4 simple ?
         bool stupid_death = false;
         
         if (!threat_persists) {
-            // On vérifie si l'adversaire a une victoire immédiate visible statiquement
-            int opp_eval = evaluate_board(g, opponent);
+            // Check victoire immédiate adverse
+            if (evaluate_board(g, opponent) >= WIN_SCORE) stupid_death = true;
             
-            // Si score très élevé = victoire ou menace imparable
-            if (opp_eval >= WIN_SCORE) {
-                stupid_death = true;
-            }
-            // Double check manuel sur les niveaux de menace
-            else if (g->max_threat_level[opponent] >= IDX_OPEN_FOUR) {
-                 stupid_death = true;
+            // Check Open 4 adverse non bloqué (VCF search peut parfois rater un simple Open 4 si depth est bas)
+            if (!stupid_death) {
+                // On scanne rapidement les menaces
+                // (Idéalement on devrait faire un update incremental, ici on check le score max)
+                // Note : evaluate_board check déjà les alignements, mais pas les Open 4 futurs
+                // On suppose que vcf_search(depth 0) voit les Open 4.
             }
         }
 
         undo_move(g, me, &undo);
 
-        // Si le VCF est brisé ET qu'on ne meurt pas bêtement juste après
+        // Si on survit !
         if (!threat_persists && !stupid_death) {
-        // On évalue la qualité offensive de ce sauvetage
             int my_attack_score = get_point_score(g, GET_X(idx), GET_Y(idx), me);
-        
-        // Si c'est une contre-attaque (ex: crée un 3 ou 4), c'est BEAUCOUP mieux qu'un blocage passif
-            if (my_attack_score > best_save_score) {
-            best_save_score = my_attack_score;
-            best_save_idx = idx;
+            
+            // Si on trouve une défense qui crée aussi une menace (Contre-Attaque), c'est le Graal
+            if (my_attack_score >= OPEN_FOUR) {
+                printf(">>> SAUVETAGE OFFENSIF : (%d,%d) bloque et contre-attaque !\n", GET_X(idx), GET_Y(idx));
+                return idx;
             }
-        
-        // Si on trouve une contre-attaque majeure (Open 4), on la joue direct
-            if (my_attack_score >= OPEN_FOUR) return idx;
-            if (best_save_idx != -1) {
-                printf(">>> SAUVETAGE OPTIMISÉ : Coup (%d,%d) (Score Attaque: %d)\n", GET_X(idx), GET_Y(idx), my_attack_score);
-                return best_save_idx;
+            
+            // Sinon on garde la meilleure défense trouvée (celle qui nous donne le meilleur positionnement)
+            if (my_attack_score > best_save_score) {
+                best_save_score = my_attack_score;
+                best_save_idx = idx;
             }
         }
         
-        // Timeout de sécurité pour ne pas freeze (400ms alloués à la crise)
-        if ((double)(clock() - start) / CLOCKS_PER_SEC > 0.40) break;
+        // Check timeout (on laisse jusqu'à 80% du temps restant pour la survie)
+        if ((double)(clock() - start) / CLOCKS_PER_SEC > 0.40) {
+            #ifdef DEBUG
+            printf(">>> Timeout Crisis Solver après %d coups testés\n", tested_moves);
+            #endif
+            break;
+        }
     }
 
+    if (best_save_idx != -1) {
+        printf(">>> SAUVETAGE TROUVÉ : (%d,%d) après %d tests\n", 
+               GET_X(best_save_idx), GET_Y(best_save_idx), tested_moves);
+        return best_save_idx;
+    }
 
-    printf(">>> ÉCHEC : Aucune parade trouvée.\n");
+    printf(">>> ÉCHEC DÉFENSE TACTIQUE : Aucune parade trouvée après %d tests.\n", tested_moves);
     return -2;
 }
 

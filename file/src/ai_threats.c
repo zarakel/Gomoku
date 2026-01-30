@@ -12,34 +12,32 @@
 
 /* Dans ai_threats.c ou heuristics.c */
 
-static int count_empty_neighbors(game *g, int idx) {
-    if (idx == -1) return 0;
+// static int count_empty_neighbors(game *g, int idx) {
+//     if (idx == -1) return 0;
     
-    int x = GET_X(idx);
-    int y = GET_Y(idx);
-    int count = 0;
+//     int x = GET_X(idx);
+//     int y = GET_Y(idx);
+//     int count = 0;
     
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            int nx = x + dx;
-            int ny = y + dy;
-            if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] == EMPTY) {
-                count++;
-            }
-        }
-    }
+//     for (int dy = -1; dy <= 1; dy++) {
+//         for (int dx = -1; dx <= 1; dx++) {
+//             if (dx == 0 && dy == 0) continue;
+//             int nx = x + dx;
+//             int ny = y + dy;
+//             if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] == EMPTY) {
+//                 count++;
+//             }
+//         }
+//     }
     
-    return count;
-}
+//     return count;
+// }
 
 int count_serious_threats(game *g, int player) {
     int threat_count = 0;
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
-    
-    bool counted[MAX_BOARD] = {false};
-    
+        
     for (int idx = 0; idx < MAX_BOARD; idx++) {
         if (g->board[idx] != player) continue;
         
@@ -78,9 +76,8 @@ int count_serious_threats(game *g, int player) {
             }
             
             /* Menace sérieuse : 3+ pierres avec espace */
-            if (stones >= 3 && open_ends >= 1 && !counted[idx]) {
+            if (stones >= 3 && open_ends >= 1) {
                 threat_count++;
-                counted[idx] = true;
             }
         }
     }
