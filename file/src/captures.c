@@ -78,9 +78,9 @@ void checkPieceCapture(game *gameData, screen *windows, int lx, int ly)
             gameData->board[idx] = EMPTY;
             
             // Mise à jour Graphique (Seulement si windows existe, pour compatibilité IA future)
-            // if (windows) {
+            if (windows) {
                 drawSquare(windows, GET_X(idx), GET_Y(idx), EMPTY);
-            // }
+            }
         }
 
         // Mise à jour Scores (Chaque paire vaut 1 point de capture)
@@ -167,11 +167,6 @@ int count_potential_captures(game *g, int lx, int ly, int player) {
     return capture_count;
 }
 
-/*
- * NOUVELLE FONCTION : Compte les paires du joueur qui sont VULNÉRABLES à une capture
- * Pattern vulnérable : . X X _ où _ est vide et . est l'adversaire qui peut capturer
- * Retourne le nombre de paires vulnérables
- */
 int count_vulnerable_pairs(game *g, int player) {
     int opponent = (player == P1) ? P2 : P1;
     int vulnerable_count = 0;
@@ -238,30 +233,6 @@ int find_capture_move(game *g, int player) {
         
         int caps = count_potential_captures(g, GET_X(i), GET_Y(i), player);
         if (caps >= 2) { // Au moins une paire
-            return i;
-        }
-    }
-    return -1;
-}
-
-/*
- * NOUVELLE FONCTION : Trouve la case qui BLOQUE une capture imminente de nos paires
- * L'adversaire pourrait capturer si on ne bloque pas
- */
-int find_capture_block_move(game *g, int player) {
-    int opponent = (player == P1) ? P2 : P1;
-    
-    // Pour chaque case vide, vérifier si l'adversaire y jouerait pour capturer
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) continue;
-        
-        // Simuler le coup adverse
-        g->board[i] = opponent;
-        int caps = count_potential_captures(g, GET_X(i), GET_Y(i), opponent);
-        g->board[i] = EMPTY;
-        
-        if (caps >= 2) { // L'adversaire capturerait au moins une paire
-            // Cette case est critique ! On doit soit la bloquer, soit protéger nos paires
             return i;
         }
     }

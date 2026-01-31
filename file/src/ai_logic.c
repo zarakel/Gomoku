@@ -3,76 +3,123 @@
 void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
-    int opponent = (player == P1) ? P2 : P1;
-
-    // Sauvegarde de l'état AVANT modification
+    
+    // 1. Sauvegarde pour Undo
     undo->move_idx = idx;
     undo->prev_captures[P1] = g->captures[P1];
     undo->prev_captures[P2] = g->captures[P2];
-    undo->captured_count = 0;
 
-    // 1. Pose de la pierre
+    // 2. RETIRER L'ANCIEN ÉTAT (Avant de poser la pierre)
+    // On retire les scores des lignes qui passent par (x,y) car elles vont être modifiées/coupées
+    update_impacted_scores(g, x, y, true); // true = remove
+
+    // 3. POSER LA PIERRE
     g->board[idx] = player;
     g->current_hash ^= zobrist_table[idx][player];
 
-    // 2. Détection des captures (on stocke les indices AVANT de modifier)
-    int opponent_val = opponent;
-    const int dirs[8][2] = {
-        { 1, 0}, { 0, 1}, {-1, 0}, { 0,-1},
-        { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1}
-    };
+    // 4. AJOUTER LE NOUVEL ÉTAT (Positionnel pierre posée)
+    // On ajoute les nouveaux scores créés par cette pierre
+    update_impacted_scores(g, x, y, false); // false = add
 
-    for (int d = 0; d < 8; d++) {
-        int dx = dirs[d][0];
-        int dy = dirs[d][1];
-        
-        int x1 = x + dx,     y1 = y + dy;
-        int x2 = x + 2 * dx, y2 = y + 2 * dy;
-        int x3 = x + 3 * dx, y3 = y + 3 * dy;
-
-        if (!IS_VALID(x3, y3)) continue;
-
-        int idx1 = GET_INDEX(x1, y1);
-        int idx2 = GET_INDEX(x2, y2);
-        int idx3 = GET_INDEX(x3, y3);
-
-        // Pattern: PLAYER (vient d'être posé) - OPP - OPP - PLAYER
-        if (g->board[idx1] == opponent_val &&
-            g->board[idx2] == opponent_val &&
-            g->board[idx3] == player) 
-        {
-            // Enregistrer pour undo
-            undo->captured_indices[undo->captured_count++] = idx1;
-            undo->captured_indices[undo->captured_count++] = idx2;
-            
-            // Appliquer la capture
-            g->board[idx1] = EMPTY;
-            g->board[idx2] = EMPTY;
-            g->current_hash ^= zobrist_table[idx1][opponent_val];
-            g->current_hash ^= zobrist_table[idx2][opponent_val];
-        }
+    // 5. GESTION DES CAPTURES
+    int captured_indices[10];
+    int nb_cap = apply_captures_for_ai(g, x, y, player, captured_indices);
+    
+    undo->captured_count = nb_cap;
+    
+    // --- AJOUT CORRECTIF ICI ---
+    // On met à jour le compteur de paires capturées (nb_cap est en pierres, donc / 2)
+    if (nb_cap > 0) {
+        g->captures[player] += (nb_cap / 2);
     }
+    // ---------------------------
 
-    // 3. Mettre à jour le compteur de captures
-    g->captures[player] += (undo->captured_count / 2);
+    for(int i=0; i<nb_cap; i++) {
+        undo->captured_indices[i] = captured_indices[i];
+        int cx = GET_X(captured_indices[i]);
+        int cy = GET_Y(captured_indices[i]);
+        
+        // La pierre capturée a été retirée par apply_captures_for_ai
+        // Mais nous devons mettre à jour le score incrémental autour d'elle !
+        
+        // Astuce : La pierre est DÉJÀ partie du plateau (EMPTY).
+        // Donc update_impacted_scores va voir du vide et calculer le score "post-capture".
+        // Il nous manque l'étape "retirer le score de la pierre adverse qui était là".
+        
+        // On remet temporairement la pierre adverse pour retirer son score proprement
+        int opponent = (player == P1) ? P2 : P1;
+        g->board[captured_indices[i]] = opponent;
+        
+        update_impacted_scores(g, cx, cy, true); // Retirer score adverse (mort)
+        
+        g->board[captured_indices[i]] = EMPTY;   // On l'enlève pour de bon
+        
+        update_impacted_scores(g, cx, cy, false); // Ajouter score du vide (nouvelles ouvertures potentielles)
+        
+        // Hash update (Capture)
+        g->current_hash ^= zobrist_table[captured_indices[i]][opponent];
+    }
 }
 
 void undo_move(game *g, int player, MoveUndo *undo) {
     int idx = undo->move_idx;
+    int x = GET_X(idx);
+    int y = GET_Y(idx);
     int opponent = (player == P1) ? P2 : P1;
 
-    // 1. Restaurer les pierres capturées
-    for (int i = 0; i < undo->captured_count; i++) {
-        int cap_idx = undo->captured_indices[i];
-        g->board[cap_idx] = opponent;
-        g->current_hash ^= zobrist_table[cap_idx][opponent];
-    }
+    // 1. ANNULER LES CAPTURES (D'abord, pour restaurer l'environnement)
+    if (undo->captured_count > 0) {
+         for(int i=0; i<undo->captured_count; i++) {
+            int c_idx = undo->captured_indices[i];
+            int cx = GET_X(c_idx);
+            int cy = GET_Y(c_idx);
 
-    // 2. Retirer notre pierre
+            // On retire le score actuel (vide)
+            update_impacted_scores(g, cx, cy, true);
+
+            // On remet la pierre adverse
+            g->board[c_idx] = opponent;
+            g->current_hash ^= zobrist_table[c_idx][opponent];
+
+            // On rajoute son score restauré
+            update_impacted_scores(g, cx, cy, false);
+        }
+    }
+    g->captures[player] = undo->prev_captures[player];
+    g->captures[opponent] = undo->prev_captures[opponent];
+
+    // 2. RETIRER LA PIERRE JOUÉE
+    // On retire son score actuel
+    update_impacted_scores(g, x, y, true);
+
     g->board[idx] = EMPTY;
     g->current_hash ^= zobrist_table[idx][player];
+
+    // 3. RESTAURER L'ÉTAT DU VIDE
+    // On remet les scores tels qu'ils étaient quand c'était vide
+    update_impacted_scores(g, x, y, false);
+}
+
+void update_line_stats(game *g, int player, int old_score, int new_score) {
+    // 1. Retirer l'ancienne menace
+    if (old_score != 0) { // Si c'était 0 (vide), rien à retirer
+        int old_lvl = get_threat_level(old_score);
+        g->threat_counts[player][old_lvl]--;
+    }
     
-    // 3. Restaurer les compteurs de captures
-    g->captures[P1] = undo->prev_captures[P1];
-    g->captures[P2] = undo->prev_captures[P2];
+    // 2. Ajouter la nouvelle menace
+    if (new_score != 0) {
+        int new_lvl = get_threat_level(new_score);
+        g->threat_counts[player][new_lvl]++;
+    }
+    
+    // 3. Mettre à jour le Max Threat (Lazy update)
+    // On cherche le plus haut niveau qui a un compteur > 0
+    for (int lvl = IDX_WIN; lvl >= 0; lvl--) {
+        if (g->threat_counts[player][lvl] > 0) {
+            g->max_threat_level[player] = lvl; // ou stocker le score type correspondant
+            return;
+        }
+    }
+    g->max_threat_level[player] = 0;
 }

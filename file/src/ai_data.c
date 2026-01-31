@@ -31,7 +31,7 @@ void clear_heuristics() {
 }
 
 void tt_save(uint64_t key, int depth, int val, int flag, int best_move) {
-    int idx = key % TT_SIZE; 
+    int idx = key & (TT_SIZE - 1); 
     if (transposition_table[idx].key != key || depth >= transposition_table[idx].depth) {
         transposition_table[idx].key = key;
         transposition_table[idx].depth = depth;
@@ -42,7 +42,7 @@ void tt_save(uint64_t key, int depth, int val, int flag, int best_move) {
 }
 
 TTEntry* tt_probe(uint64_t key) {
-    int idx = key % TT_SIZE;
+    int idx = key & (TT_SIZE - 1);
     if (transposition_table[idx].key == key) return &transposition_table[idx];
     return NULL;
 }

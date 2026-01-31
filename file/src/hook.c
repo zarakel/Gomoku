@@ -158,15 +158,18 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
                 // 3. Gérer les captures
                 checkPieceCapture(gameData, windows, cell_x, cell_y);
                 
+                // --- AJOUT : VÉRIFICATION VICTOIRE IMMÉDIATE ---
+                checkVictoryCondition(gameData);
+                if (gameData->game_over) {
+                    windows->changed = true; // Pour afficher le message de fin
+                    return; // ON ARRÊTE TOUT ICI, on ne change pas de tour !
+                }
+                // -----------------------------------------------
+                
                 // 4. Changer de tour
                 gameData->turn = (gameData->turn == P1) ? P2 : P1;
                 gameData->hint_idx = -1; // Effacer le hint après coup joué
                 windows->changed = true;
-                
-                // Reset du timer pour l'IA (si elle doit jouer ensuite)
-                if (isIaTurn(gameData->iaTurn, gameData->turn)) {
-                     // launchTimer(...) si nécessaire
-                }
             }
         }
     }

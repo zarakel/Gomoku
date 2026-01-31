@@ -1,171 +1,84 @@
 #include "../include/gomoku.h"
 #include <limits.h>
 
-// --- Fonction de vérification manuelle (Anti-Zombie) ---
-static bool check_real_win(game *g, int player) {
-    // Scan horizontal, vertical, diagonal
-    for (int y = 0; y < BOARD_SIZE; y++) {
-        for (int x = 0; x < BOARD_SIZE; x++) {
-            int idx = y * BOARD_SIZE + x;
-            if (g->board[idx] != player) continue;
-
-            int dirs[4][2] = {{1,0}, {0,1}, {1,1}, {1,-1}};
-            for (int d = 0; d < 4; d++) {
-                int count = 1;
-                for (int k = 1; k < 5; k++) {
-                    int nx = x + dirs[d][0] * k;
-                    int ny = y + dirs[d][1] * k;
-                    if (nx < 0 || nx >= BOARD_SIZE || ny < 0 || ny >= BOARD_SIZE) break;
-                    if (g->board[ny * BOARD_SIZE + nx] == player) count++;
-                    else break;
-                }
-                if (count >= 5) return true;
-            }
-        }
-    }
-    if (g->captures[player] >= 5) return true;
-    return false;
-}
-
-/* Exécute la recherche pour une profondeur donnée avec Aspiration Window */
 static int run_aspiration_search(game *g, int depth, int prev_score, int *best_move_out, int ia_player, clock_t start) {
-    // CORRECTION : Utiliser des bornes plus sûres
     int alpha = -WIN_SCORE - 10000;
     int beta = WIN_SCORE + 10000;
-    int window = 500;
+    int window = 100000;
     
-    // Initialisation de la fenêtre étroite
-    if (depth > 2) {
+    if (depth > 2 && abs(prev_score) < WIN_SCORE - 10000) {
+        window = 100000 + (abs(prev_score) / 20);
         alpha = prev_score - window;
         beta = prev_score + window;
-        
-        // Clamp pour éviter les overflows
         if (alpha < -WIN_SCORE - 10000) alpha = -WIN_SCORE - 10000;
         if (beta > WIN_SCORE + 10000) beta = WIN_SCORE + 10000;
     }
 
-    int loop_guard = 0; // Sécurité anti-boucle infinie
-
-    while (true) {
-        loop_guard++;
-        if (loop_guard > 3) {
-            // Si on boucle trop, on retourne ce qu'on a trouvé de mieux
-            return prev_score; 
-        }
-
+    int loop_guard = 0;
+    while (loop_guard++ < 3) {
+        int alpha_origin = alpha;
+        int beta_origin = beta;
         int current_best_idx = -1;
         int current_best_score = INT_MIN;
         bool time_out = false;
         
-        // Root Move Generation
         MoveCandidate moves[MAX_BOARD];
         int count = generate_moves(g, moves, ia_player, depth, *best_move_out);
-        
-        if (count == 0) return prev_score; // Pas de coups ? On garde le score précédent
+        if (count == 0) return prev_score; 
         if (*best_move_out == -1) *best_move_out = moves[0].index;
-
-        game working_game = *g; 
 
         for (int i = 0; i < count; i++) {
             int idx = moves[i].index;
             MoveUndo undo;
-            apply_move(&working_game, idx, ia_player, &undo);
-            
-            // Appel Minimax
-            int val = minimax(&working_game, depth - 1, alpha, beta, false, ia_player, start);
-            
-            undo_move(&working_game, ia_player, &undo);
+            apply_move(g, idx, ia_player, &undo);
+            int val = minimax(g, depth - 1, alpha, beta, false, ia_player, start);
+            undo_move(g, ia_player, &undo);
 
-            if (val == -2) { time_out = true; break; }
-            
+            if (val == TIMEOUT_CODE) { time_out = true; break; }
             if (val > current_best_score) {
                 current_best_score = val;
                 current_best_idx = idx;
             }
-            
-            // Alpha-Beta classique au niveau racine
             if (val > alpha) alpha = val;
-            if (alpha >= beta) break; // Beta Cutoff
+            if (alpha >= beta) { debug_cutoff_count++; break; }
         }
 
-        if (time_out) return -2; // Signal Timeout
-
-        // --- ASPIRATION LOGIC (CORRIGÉE) ---
-        // On vérifie si le score est sorti de la fenêtre initiale.
-        // CORRECTION : On utilise '<' et '>' stricts pour éviter le fail sur égalité (0 <= 0)
-        // Sauf si on est déjà en fenêtre large (INT_MIN/INT_MAX).
-        
-        bool fail_low = (current_best_score < alpha); // Était <=
-        bool fail_high = (current_best_score > beta); // Était >=
-
-        // Cas spécial : Si alpha est INT_MIN, on ne peut pas fail low
-        if (alpha == INT_MIN) fail_low = false;
-        // Cas spécial : Si beta est INT_MAX, on ne peut pas fail high
-        if (beta == INT_MAX) fail_high = false;
-
-        if (depth > 2 && (fail_low || fail_high)) {
-            #ifdef DEBUG
-            printf("Aspiration Fail at depth %d (Score %d outside [%d, %d]). Re-searching full window.\n", 
-                   depth, current_best_score, alpha, beta);
-            #endif
-            
-            // Si on a déjà tout ouvert, on arrête (évite la boucle infinie)
-            if (alpha <= INT_MIN + 1000 && beta >= INT_MAX - 1000) {
-                *best_move_out = current_best_idx;
-                return current_best_score;
-            }
-
-            // Sinon, on ouvre grand les vannes et on recommence
-            alpha = INT_MIN; 
-            beta = INT_MAX;
+        if (time_out) return TIMEOUT_CODE; 
+        if (depth > 2 && (current_best_score < alpha_origin || current_best_score > beta_origin)) {
+            alpha = -WIN_SCORE - 10000; 
+            beta = WIN_SCORE + 10000;
             continue; 
         }
-
         *best_move_out = current_best_idx;
         return current_best_score;
     }
+    return prev_score;
 }
 
-/* Orchestre l'Iterative Deepening */
 static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
     int best_move = -1;
+    int prev_best_move = -1;
     int prev_score = 0;
+    double allocated_time = (double)TIME_LIMIT_MS / 1000.0;
 
     for (int depth = 2; depth <= MAX_DEPTH; depth += 2) {
+        if (best_move != -1) prev_best_move = best_move;
         int score = run_aspiration_search(g, depth, prev_score, &best_move, ia_player, start);
-        
-        if (score == -2) { // Timeout
-            #ifdef DEBUG
-            printf("Timeout at depth %d. Keeping best move from depth %d.\n", depth, depth-2);
-            #endif
-            break;
-        }
+        if (score == TIMEOUT_CODE) return (prev_best_move != -1) ? prev_best_move : best_move;
 
         prev_score = score;
-        #ifdef DEBUG
-        printf("Depth %d complete. Best: %d. Nodes: %lld, Cutoffs: %lld.\n", depth, score, debug_node_count, debug_cutoff_count);
-        #endif
-
-        if (score > WIN_SCORE - 5000) {
-            #ifdef DEBUG
-            printf("Winning move found at depth %d.\n", depth);
-            #endif
-            break;
-        }
-        if ((clock() - start) * 1000 / CLOCKS_PER_SEC > TIME_LIMIT_MS) break;
+        printf("Depth %d complete. Score: %d\n", depth, score);
+        if (score > WIN_SCORE - 5000 || (double)(clock() - start) / CLOCKS_PER_SEC > allocated_time * 0.60) break;
     }
     return best_move;
 }
 
-/* Applique le coup final et met à jour l'UI */
 static void finalize_move(game *g, screen *win, int move_idx, int player, clock_t start, bool is_vcf) {
     if (move_idx != -1) {
         int x = GET_X(move_idx);
         int y = GET_Y(move_idx);
-        
         MoveUndo final_undo;
         apply_move(g, move_idx, player, &final_undo);
-
         drawSquare(win, x, y, player);
         if (final_undo.captured_count > 0) {
             for (int k = 0; k < final_undo.captured_count; k++) {
@@ -174,39 +87,92 @@ static void finalize_move(game *g, screen *win, int move_idx, int player, clock_
             }
         }
         win->changed = true; 
-        
-        if (is_vcf) printf(">>> IA joue le coup VCF/WIN en (%d, %d) [Temps: %.3fs]\n", x, y, (double)(clock() - start) / CLOCKS_PER_SEC);
-        else printf("IA plays at (%d, %d) [Temps: %.3fs]\n", x, y, (double)(clock() - start) / CLOCKS_PER_SEC);
-    } else {
-        printf("IA cannot move.\n");
+        printf("IA plays at (%d, %d) [%.3fs]\n", x, y, (double)(clock() - start) / CLOCKS_PER_SEC);
+        g->ia_timer.elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
     }
-    g->ia_timer.elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
 }
 
 void makeIaMove(game *gameData, screen *windows) {
-    int opponent = (gameData->turn == P1) ? P2 : P1;
-    
-    // --- SÉCURITÉ RENFORCÉE ---
-    // On ne fait pas confiance au score incrémental pour la défaite.
-    // On scanne le plateau.
-    if (check_real_win(gameData, opponent)) {
-        printf(">>> L'IA voit (scan réel) qu'elle a perdu. Elle ne joue pas.\n");
-        return;
-    }
-    // --------------------------
-
+    launchTimer(&gameData->ia_timer);
     clock_t start = clock();
     int ia_player = gameData->turn;
-    
-    // 1. VCF / Victoire Immédiate
-    int best_move = solve_vcf(gameData, ia_player, start);
-    bool is_vcf = (best_move != -1);
+    int opponent = (ia_player == P1) ? P2 : P1;
+    int best_move = -1;
+    bool forcing_found = false;
+    char *reason = "Minimax";
 
-    // 2. Minimax (Si pas de VCF)
-    if (!is_vcf) {
-        best_move = run_iterative_deepening(gameData, ia_player, start);
+    refresh_board_stats(gameData);
+    update_crisis_state(gameData, ia_player);
+
+    // --- PHASE 1 : SCAN UNIFIÉ (Gagner ou Bloquer) ---
+    int max_opp_threat = 0;
+    int threat_idx = -1;
+    int my_win_idx = -1;
+
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (gameData->board[idx] != EMPTY) continue;
+
+        // Test de MA victoire
+        gameData->board[idx] = ia_player;
+        int my_s = get_point_score(gameData, GET_X(idx), GET_Y(idx), ia_player);
+        int my_c = count_potential_captures(gameData, GET_X(idx), GET_Y(idx), ia_player);
+        gameData->board[idx] = EMPTY;
+        if ((my_s >= WIN_SCORE || gameData->captures[ia_player] + (my_c/2) >= 5) && !is_double_three(gameData, idx, ia_player)) {
+            my_win_idx = idx; break;
+        }
+
+        // Test menace ADVERSE
+        gameData->board[idx] = opponent;
+        int opp_s = get_point_score(gameData, GET_X(idx), GET_Y(idx), opponent);
+        int opp_c = count_potential_captures(gameData, GET_X(idx), GET_Y(idx), opponent);
+        gameData->board[idx] = EMPTY;
+        if (gameData->captures[opponent] + (opp_c/2) >= 5) opp_s = WIN_SCORE;
+        if (opp_s > max_opp_threat) { max_opp_threat = opp_s; threat_idx = idx; }
     }
 
-    //3. Application
-    finalize_move(gameData, windows, best_move, ia_player, start, is_vcf);
+    if (my_win_idx != -1) {
+        best_move = my_win_idx; reason = "Victoire immédiate"; forcing_found = true;
+    } else if (max_opp_threat >= CLOSED_FOUR) {
+        if (threat_idx != -1 && !is_double_three(gameData, threat_idx, ia_player)) {
+            best_move = threat_idx; reason = "Blocage menace critique"; forcing_found = true;
+        }
+    }
+
+    // --- PHASE 2 : VCF & MINIMAX ---
+    if (!forcing_found) {
+        int vcf_move = find_winning_vcf(gameData, ia_player);
+        if (vcf_move != -1 && !is_double_three(gameData, vcf_move, ia_player)) {
+            best_move = vcf_move; reason = "VCF Gagnant";
+        } else {
+            best_move = run_iterative_deepening(gameData, ia_player, start);
+            // Sécurité anti-abandon
+            if (evaluate_board(gameData, ia_player) < -WIN_SCORE / 2 && threat_idx != -1) {
+                if (!is_double_three(gameData, threat_idx, ia_player)) {
+                    best_move = threat_idx; reason = "Défense de dernier recours";
+                }
+            }
+        }
+    }
+
+    double time_spent = (double)(clock() - start) / CLOCKS_PER_SEC;
+
+    if (best_move != -1) {
+        printf("✅ [%s] (%d, %d). Raison: %s [Temps: %.3fs]\n", 
+               forcing_found ? "FORCED" : "AI", 
+               GET_X(best_move), GET_Y(best_move), 
+               reason, 
+               time_spent);
+    }
+
+    // --- VALIDATION & SECOURS ---
+    if (best_move == -1 || is_double_three(gameData, best_move, ia_player)) {
+        for (int i = 0; i < MAX_BOARD; i++) {
+            if (gameData->board[i] == EMPTY && !is_double_three(gameData, i, ia_player)) {
+                best_move = i; break;
+            }
+        }
+    }
+
+    printf("✅ [%s] (%d, %d). Raison: %s\n", forcing_found ? "FORCED" : "AI", GET_X(best_move), GET_Y(best_move), reason);
+    finalize_move(gameData, windows, best_move, ia_player, start, false);
 }

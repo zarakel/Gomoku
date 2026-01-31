@@ -12,18 +12,14 @@
 #include <math.h>
 #include <limits.h>
 
-// --- PROJECT LIBS ---
-#include "../../lib/MLX42/include/MLX42/MLX42.h"
 
-// --- CONSTANTES TT ---
-#define TT_SIZE (1 << 20) // ~1 Million d'entrées (Power of 2 pour rapidité)
-#define TT_EXACT 0
-#define TT_LOWERBOUND 1   // Alpha cutoff
-#define TT_UPPERBOUND 2   // Beta cutoff
+#define TIMEOUT_CODE -99999999
 
-// --- CONSTANTES DE JEU & PERFORMANCE ---
-#define WIDTH 818
-#define HEIGHT 818
+// Vérifie si un pixel (x, y) est dans les limites de la fenêtre 'win'
+// On cast en (int) pour éviter les warnings de comparaison signé/non-signé
+#define IS_VALID_PIXEL(x, y, win) \
+    ((x) >= 0 && (y) >= 0 && \
+     (x) < (int)(win)->width && (y) < (int)(win)->height)
 
 // Bouton Reset
 #define BTN_X 700
@@ -37,65 +33,94 @@
 #define BOARD_MARGIN_RIGHT 30
 #define BOARD_MARGIN_BOTTOM 30
 
-// Paramètres du plateau
+// --- PROJECT LIBS ---
+#include "../../lib/MLX42/include/MLX42/MLX42.h"
+
+// --- CONSTANTES TT ---
+#define TT_SIZE (2 << 20) // ~2 Millions d'entrées
+#define TT_EXACT 0
+#define TT_LOWERBOUND 1
+#define TT_UPPERBOUND 2
+
+// --- CONSTANTES DE JEU ---
+#define WIDTH 818
+#define HEIGHT 818
 #define BOARD_SIZE 19
-#define MAX_BOARD (BOARD_SIZE * BOARD_SIZE) // 361 cases
+#define MAX_BOARD (BOARD_SIZE * BOARD_SIZE)
 #define WIN_LENGTH 5
 #define MAX_CAPTURES 10 // 5 paires = Victoire
 
-// Limites de temps et de profondeur
+// Limites
 #define MAX_DEPTH 30
-#define TIME_LIMIT_MS 450 // On garde une marge de sécurité (50ms) pour l'affichage
+#define TIME_LIMIT_MS 450 
 
-// Valeurs des cases (Optimisé pour lecture rapide)
+// Valeurs cases
 #define EMPTY 0
-#define P1 1     // Joueur 1 (Noir)
-#define P2 2     // Joueur 2 (Blanc/IA)
-#define PREVIS 3 // Prévisualisation
+#define P1 1
+#define P2 2
+#define PREVIS 3
 
-// --- MACROS (CRITIQUE POUR LA VITESSE) ---
+// --- MACROS ---
 #define GET_INDEX(x, y) ((y) * BOARD_SIZE + (x))
 #define GET_X(index) ((index) % BOARD_SIZE)
 #define GET_Y(index) ((index) / BOARD_SIZE)
 #define IS_VALID(x, y) ((x) >= 0 && (x) < BOARD_SIZE && (y) >= 0 && (y) < BOARD_SIZE)
 
-// --- POIDS DES SCORES (HIÉRARCHIE LOGARITHMIQUE) ---
-// Chaque niveau est ~10x plus important que le précédent
+// --- SCORES CORRIGÉS (DIVISÉS PAR 100 POUR ÉVITER OVERFLOW) ---
+// Max Int: 2,147,483,647. 
+// Win Score à 20M laisse de la place pour x100 accumulations sans crash.
 
-#define WIN_SCORE       1000000000  // 10^9 - Victoire absolue
-#define OPEN_FOUR       100000000   // 10^8 - Victoire au prochain tour
-#define CLOSED_FOUR     10000000    // 10^7 - Force le blocage immédiat
-#define OPEN_THREE      1000000     // 10^6 - Menace critique
-#define CLOSED_THREE    100000      // 10^5 - Menace sérieuse
-#define OPEN_TWO        10000       // 10^4 - Bon développement
-#define CLOSED_TWO      1000        // 10^3 - Développement faible
+#define SORT_WIN        20000000  // Alias pour le tri
+
+// 1. Les Scores de base (Pour l'évaluation statique) - ON GARDE
+#define WIN_SCORE       20000000 
+#define OPEN_FOUR       10000000 
+#define CLOSED_FOUR     5000000   
+#define OPEN_THREE      2000000   
+#define CLOSED_THREE    50000
+#define OPEN_TWO        1000
+#define CLOSED_TWO      100
+
+// Seuils pour les menaces
+#define THREAT_THRESHOLD 500000
 
 // Bonus/Malus
-#define CAPTURE_BONUS   50000       // Par paire capturée
-#define CENTER_BONUS    500         // Proximité du centre
+#define CAPTURE_BONUS   50000     // Par paire capturée
+#define CENTER_BONUS    50        // Proximité du centre
 
-// Vérifie si un pixel (x, y) est dans les limites de la fenêtre 'win'
-// On cast en (int) pour éviter les warnings de comparaison signé/non-signé
-#define IS_VALID_PIXEL(x, y, win) \
-    ((x) >= 0 && (y) >= 0 && \
-     (x) < (int)(win)->width && (y) < (int)(win)->height)
+// --- CONSTANTES DE TRI (HIÉRARCHIE CORRIGÉE) ---
+
+#define SORT_HASH          200000000 // Priorité absolue (Hash Move)
+
+// 1. VICTOIRE IMMÉDIATE (Je gagne tout de suite)
+#define SORT_WIN_IMMEDIATE 100000000 
+
+// 2. SURVIE (Je vais mourir au prochain tour si je ne joue pas là)
+// (Bloquer Open 4, Closed 4, ou Victoire par Capture)
+#define SORT_BLOCK_WIN     50000000 
+
+// 3. MENACES MAJEURES
+#define SORT_WIN_CAPTURE   40000000 
+#define SORT_THREAT_MAX    30000000 // Pour les menaces très fortes
+
+// 4. AUTRES
+#define SORT_CAPTURE       5000000
+#define SORT_KILLER_1      500000
+#define SORT_KILLER_2      400000
+
+#define THREAT_LEVELS 7
+
+#define IDX_WIN          6
+#define IDX_OPEN_FOUR    5
+#define IDX_CLOSED_FOUR  4
+#define IDX_OPEN_THREE   3
+#define IDX_CLOSED_THREE 2
+#define IDX_OPEN_TWO     1  // <--- NOUVEAU (Menace naissante)
+#define IDX_OTHERS       0
 
 // --- STRUCTURES ---
 
-// Tables de score pré-calculées (à ajuster selon vos préférences)
-// C'est beaucoup plus rapide que des 'if' en cascade
-static const int SCORE_TABLE[6][3] = {
-    // [Consecutive][OpenEnds]
-    {0, 0, 0},             // 0 pierres
-    {1, 10, 15},           // 1 pierre  (Fermé, 1 bout, 2 bouts)
-    {10, 50, 200},          // 2 pierres
-    {100, 1000, 5000},      // 3 pierres
-    {5000, 10000, 50000},   // 4 pierres
-    {WIN_SCORE, WIN_SCORE, WIN_SCORE} // 5 pierres
-};
-
-typedef struct screen
-{
+typedef struct screen {
     mlx_t       *mlx;
     mlx_image_t *img;
     mlx_image_t *text_img;
@@ -111,59 +136,65 @@ typedef struct screen
     int         board_size;
 } screen;
 
-typedef struct timer
-{
+typedef struct timer {
     bool running;
     struct timespec start_ts;
     double elapsed;
 } timer;
 
-typedef struct game
-{
+typedef struct game {
     int     board[MAX_BOARD];
     int     captures[3];
     int     score[3];
     int     board_size;
     int     turn;
     int     iaTurn;
+    int     winner;
     bool    game_over;
     timer   ia_timer;
     uint64_t current_hash;
-    int     hint_idx; // <--- AJOUTER CECI
+    long long pos_score[3]; 
+    int     threat_counts[3][THREAT_LEVELS]; 
+    int     max_threat_level[3];
+    bool    in_crisis;
+    int     crisis_level;
+    int     crisis_move_count;
+    int     crisis_moves[10];
 } game;
 
-typedef struct both
-{
+typedef struct both {
     screen  *windows;
     game    *gameData;
 } both;
 
-// Structure pour stocker ce qu'il faut annuler après un coup
 typedef struct {
-    int move_idx;           // Où a-t-on joué ?
-    int captured_indices[10]; // Quels pions ont été retirés ? (Indices 1D)
-    int captured_count;     // Combien de pions retirés ?
-    int prev_score[3];      // Les scores heuristiques avant le coup
-    int prev_captures[3];   // Les compteurs de capture avant le coup
+    int move_idx;
+    int captured_indices[10];
+    int captured_count;
+    int prev_score[3];
+    int prev_captures[3];
 } MoveUndo;
 
-// --- STRUCTURE TT ---
 typedef struct {
-    uint64_t key;   // Zobrist Hash pour vérifier les collisions
-    int depth;      // Profondeur de la recherche stockée
-    int value;      // Score stocké
-    int flag;       // Type de score (Exact, Upper, Lower)
-    int best_move;  // Le meilleur coup trouvé pour cette position
+    uint64_t key;
+    int depth;
+    int value;
+    int flag;
+    int best_move;
 } TTEntry;
-
-// --- STRUCTURES IA ---
 
 typedef struct {
     int index;
     int score_estim;
+    bool is_capture;
 } MoveCandidate;
 
-// --- GLOBALES IA (Déclarations extern) ---
+typedef struct {
+    int move_idx;
+    int score;
+} MoveVCF;
+
+// --- GLOBALES ---
 extern uint64_t zobrist_table[MAX_BOARD][3];
 extern TTEntry transposition_table[TT_SIZE];
 extern int killer_moves[MAX_DEPTH][2];
@@ -173,72 +204,79 @@ extern long long debug_cutoff_count;
 
 // --- PROTOTYPES ---
 
-// graphicsUtils.c
-int     get_rgba(int r, int g, int b, int a);
+// graphicsUtils.c & hook.c & timer.c & utils.c
 void    printBlack(screen *windows);
 void    putCadrillage(screen *windows);
-int     teamColor(unsigned short int team);
 void    drawSquare(screen *windows, int x0, int y0, unsigned short int team);
 void    initGUI(screen *windows);
-
-// hook.c
 void    keyhook(mlx_key_data_t keydata, void *param);
 void    cursor(double xpos, double ypos, void *param);
 void    resize(int32_t width, int32_t height, void *param);
 void    mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *param);
-
-// timer.c
-void    stopTimer(timer *t);
 void    launchTimer(timer *t);
 void    resetTimer(timer *t);
-
-// utils.c
 bool    isIaTurn(int iaTurn, int turn);
-void    resetGame(game *gameData, screen *windows);
-
-// information.c
 void    printInformation(screen *windows, game *gameData);
+void    checkVictoryCondition(game *gameData);
 
 // captures.c
+// Note: On unifie le nom ici pour éviter les conflits
+int     count_potential_captures(game *g, int lx, int ly, int player); 
 void    checkPieceCapture(game *gameData, screen *windows, int lx, int ly);
-bool    in_bounds(int x, int y);
 int     apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_indices_buffer);
-int     count_potential_captures(game *g, int lx, int ly, int player);
-int     count_vulnerable_pairs(game *g, int player);      // NOUVEAU
-int     find_capture_move(game *g, int player);           // NOUVEAU
-int     find_capture_block_move(game *g, int player);     // NOUVEAU
-
-// victory.c
-void    checkVictoryCondition(game *gameData);
+int     count_vulnerable_pairs(game *g, int player);
+int     find_capture_move(game *g, int player);
 
 // heuristics.c 
 int     evaluate_board(game *g, int player);
 int     get_point_score(game *g, int x, int y, int player);
 bool    is_double_three(game *g, int idx, int player);
 void    explain_double_three(game *g, int idx, int player);
-int     find_gapped_four_hole(game *g, int player);
-int     find_gapped_three_hole(game *g, int player);  // NOUVEAU
-
-// ai.c
-void    makeIaMove(game *gameData, screen *windows);
+void    refresh_board_stats(game *g);
+int     get_threat_level(int score);
+void    update_impacted_scores(game *g, int x, int y, bool remove_mode);
 
 // ai_data.c
-void init_zobrist();
-void clear_heuristics();
-void tt_save(uint64_t key, int depth, int val, int flag, int best_move);
+void    init_zobrist();
+void    clear_heuristics();
+void    tt_save(uint64_t key, int depth, int val, int flag, int best_move);
 TTEntry* tt_probe(uint64_t key);
 
 // ai_logic.c
-void apply_move(game *g, int idx, int player, MoveUndo *undo);
-void undo_move(game *g, int player, MoveUndo *undo);
+void    apply_move(game *g, int idx, int player, MoveUndo *undo);
+void    undo_move(game *g, int player, MoveUndo *undo);
 
 // ai_moves.c
-int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move);
-int quick_evaluate_move(game *g, int idx, int player);
+int     generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move);
+int     check_capture_count(game *g, int idx, int player); // Helper temporaire
 
 // ai_search.c
-int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
-int solve_vcf(game *g, int ia_player, clock_t start_time);
-int vcf_search(game *g, int depth, int player, int ia_player, clock_t start_time);
+int     minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
+
+// ai_threats.c
+int     evaluate_move_with_captures_full(game *g, int idx, int player);
+int     count_serious_threats(game *g, int player);
+
+// ai_tactics.c (VCF)
+bool    has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit);
+int     find_winning_vcf(game *g, int attacker);
+int     solve_defensive_crisis(game *g, int me);
+bool    check_five_align(game *g, int idx, int player);
+bool    is_move_capturable(game *g, int idx, int player);
+
+// ai_multi_threat.c
+int     compute_junction_potential(game *g, int idx, int player);
+int     evaluate_line(game *g, int x, int y, int dx, int dy, int player);
+int     compute_fork_value(game *g, int idx, int player);
+int     count_created_threats(game *g, int idx, int player);
+
+// ai_captures.c
+int     find_best_capture_move(game *g, int player);
+int     compute_capture_danger(game *g, int opponent, int *best_idx);
+
+// ai_crisis.c
+void    update_crisis_state(game *g, int ia_player);
+int     find_best_defense_with_threat_space(game *g, int ia_player);
+bool    is_winning_threat(game *g, int idx, int opponent);
 
 #endif

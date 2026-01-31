@@ -1,10 +1,12 @@
 #include "../include/gomoku.h"
 
 /*
- * NOUVELLE FONCTION : Détecte les patterns gappés et retourne la case du trou
- * Retourne l'index de la case critique à bloquer, ou -1 si pas de gap critique
+ * Détecte les patterns gappés et retourne la case du trou
+ * Scanne TOUTES les fenêtres de 5 cases possibles, pas seulement celles centrées sur une pierre
  */
 static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
+    int opponent = (player == P1) ? P2 : P1;
+    
     // Construire un buffer de 9 cases centré sur (x,y)
     int line[9];
     int indices[9];
@@ -19,67 +21,122 @@ static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
             line[buf_idx] = g->board[indices[buf_idx]];
         } else {
             indices[buf_idx] = -1;
-            line[buf_idx] = -1; // Hors plateau = bloqué
+            line[buf_idx] = opponent; // Hors plateau = bloqué
         }
     }
     
-    // Chercher les patterns gappés de 4 pierres
-    // Pattern: X_XXX (trou en position 1)
+    // Chercher les patterns gappés de 4 pierres dans TOUTES les fenêtres de 5
     for (int start = 0; start <= 4; start++) {
-        if (line[start] == player &&
-            line[start + 1] == EMPTY &&
-            line[start + 2] == player &&
-            line[start + 3] == player &&
-            line[start + 4] == player) {
-            return indices[start + 1]; // Le trou !
+        // Vérifier que les indices sont valides
+        if (indices[start] == -1 || indices[start + 4] == -1) continue;
+        
+        // Compter les pierres et trouver le trou
+        int stones = 0;
+        int hole_pos = -1;
+        int hole_count = 0;
+        bool blocked = false;
+        
+        for (int i = 0; i < 5; i++) {
+            if (line[start + i] == player) {
+                stones++;
+            } else if (line[start + i] == EMPTY) {
+                hole_count++;
+                hole_pos = start + i;
+            } else {
+                blocked = true;
+                break;
+            }
         }
-    }
-    
-    // Pattern: XX_XX (trou au milieu)
-    for (int start = 0; start <= 4; start++) {
-        if (line[start] == player &&
-            line[start + 1] == player &&
-            line[start + 2] == EMPTY &&
-            line[start + 3] == player &&
-            line[start + 4] == player) {
-            return indices[start + 2]; // Le trou !
-        }
-    }
-    
-    // Pattern: XXX_X (trou en position 3)
-    for (int start = 0; start <= 4; start++) {
-        if (line[start] == player &&
-            line[start + 1] == player &&
-            line[start + 2] == player &&
-            line[start + 3] == EMPTY &&
-            line[start + 4] == player) {
-            return indices[start + 3]; // Le trou !
+        
+        // Pattern valide : 4 pierres + 1 trou = Gapped Four !
+        if (!blocked && stones == 4 && hole_count == 1 && hole_pos != -1) {
+            if (indices[hole_pos] != -1) {
+                return indices[hole_pos];
+            }
         }
     }
     
     return -1;
 }
 
+int get_threat_level(int score) {
+    if (score >= WIN_SCORE) return IDX_WIN;
+    if (score >= OPEN_FOUR) return IDX_OPEN_FOUR; // Inclut les Gapped Fours gagnants
+    if (score >= CLOSED_FOUR) return IDX_CLOSED_FOUR; // Inclut les menaces fortes
+    if (score >= OPEN_THREE) return IDX_OPEN_THREE;
+    if (score >= CLOSED_THREE) return IDX_CLOSED_THREE;
+    return IDX_OTHERS;
+}
+
+void refresh_board_stats(game *g) {
+    // 1. Reset complet des structures
+    g->pos_score[1] = 0;
+    g->pos_score[2] = 0;
+    memset(g->threat_counts, 0, sizeof(g->threat_counts));
+    memset(g->max_threat_level, 0, sizeof(g->max_threat_level));
+
+    // 2. Scan complet du plateau
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] == EMPTY) continue;
+        
+        // On simule l'ajout de la pierre pour déclencher les mises à jour
+        // Note: update_impacted_scores ajoute le score, donc c'est parfait.
+        update_impacted_scores(g, GET_X(i), GET_Y(i), false); // false = ADD
+    }
+}
 /*
- * Fonction exportée : Trouve la case critique d'un gapped four pour un joueur
+ * Trouve la case critique d'un gapped four pour un joueur
+ * CORRIGÉ : Scanne depuis chaque pierre ET vérifie dans les deux directions
  */
 int find_gapped_four_hole(game *g, int player) {
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
     
+    // Optimisation : On ne scanne que les cases vides.
+    // Si une case vide est entourée de 4 pierres alliées dans une direction, c'est une victoire.
     for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != player) continue;
+        if (g->board[idx] != EMPTY) continue;
         
         int x = GET_X(idx);
         int y = GET_Y(idx);
         
+        // Petit filtre rapide : si la case n'a aucun voisin immédiat, inutile de scanner les lignes
+        // (Optionnel, mais peut gagner du temps en début de partie)
+        /* bool has_neighbor = false;
+        for (int i = 0; i < 4; i++) {
+             // check rapide dx/dy...
+        }
+        if (!has_neighbor) continue; 
+        */
+
         for (int d = 0; d < 4; d++) {
-            int hole = find_gap_in_line(g, x, y, dx[d], dy[d], player);
-            if (hole != -1) {
-                return hole;
+            int stones = 0;
+            
+            // Scan dans les deux sens (Positif et Négatif)
+            // On utilise une boucle pour éviter la duplication de code
+            for (int dir = -1; dir <= 1; dir += 2) {
+                for (int k = 1; k <= 4; k++) {
+                    int nx = x + dx[d] * k * dir;
+                    int ny = y + dy[d] * k * dir;
+                    
+                    if (!IS_VALID(nx, ny)) break;
+                    
+                    if (g->board[GET_INDEX(nx, ny)] == player) {
+                        stones++;
+                    } else {
+                        break; // Pierre adverse ou vide : la ligne s'arrête
+                    }
+                }
+            }
+            
+            // Si le total des pierres connectées (plus celle qu'on poserait) ferait 5 ou plus
+            // Note : stones est la somme des voisins. Si stones >= 4, alors stones + 1 (le coup) == 5.
+            if (stones >= 4) {
+                return idx;
             }
         }
     }
+    
     return -1;
 }
 
@@ -143,10 +200,16 @@ static int find_gapped_three_in_line(game *g, int x, int y, int dx, int dy, int 
  * Fonction exportée : Trouve la case critique d'un gapped THREE pour un joueur
  * C'est CRITIQUE car un gapped three non bloqué devient un gapped four !
  */
+/*
+ * Fonction exportée : Trouve la case critique d'un gapped THREE pour un joueur
+ * CORRIGÉ : Vérifie aussi depuis les cases vides
+ */
 int find_gapped_three_hole(game *g, int player) {
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
+    int opponent = (player == P1) ? P2 : P1;
     
+    // Méthode 1 : Scanner depuis chaque pierre du joueur
     for (int idx = 0; idx < MAX_BOARD; idx++) {
         if (g->board[idx] != player) continue;
         
@@ -160,140 +223,206 @@ int find_gapped_three_hole(game *g, int player) {
             }
         }
     }
+    
+    // Méthode 2 : Scanner depuis chaque case VIDE
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != EMPTY) continue;
+        
+        int x = GET_X(idx);
+        int y = GET_Y(idx);
+        
+        for (int d = 0; d < 4; d++) {
+            int stones_pos = 0;
+            int stones_neg = 0;
+            bool open_pos = false;
+            bool open_neg = false;
+            
+            // Scan positif
+            for (int k = 1; k <= 3; k++) {
+                int nx = x + dx[d] * k;
+                int ny = y + dy[d] * k;
+                if (!IS_VALID(nx, ny)) break;
+                int cell = g->board[GET_INDEX(nx, ny)];
+                if (cell == player) stones_pos++;
+                else if (cell == EMPTY) { open_pos = true; break; }
+                else break;
+            }
+            
+            // Scan négatif
+            for (int k = 1; k <= 3; k++) {
+                int nx = x - dx[d] * k;
+                int ny = y - dy[d] * k;
+                if (!IS_VALID(nx, ny)) break;
+                int cell = g->board[GET_INDEX(nx, ny)];
+                if (cell == player) stones_neg++;
+                else if (cell == EMPTY) { open_neg = true; break; }
+                else break;
+            }
+            
+            // Gapped Open Three : 3 pierres + 2 bouts ouverts
+            if (stones_pos + stones_neg == 3 && open_pos && open_neg) {
+                return idx;
+            }
+        }
+    }
+    
     return -1;
 }
 
-// Helper inline pour éviter la répétition de code
-static inline int evaluate_line(game *g, int x, int y, int dx, int dy, int player) {
+/*
+ * Détecte si un coup crée une fourchette (plusieurs menaces simultanées)
+ * Un bonus est accordé si le coup appartient à plusieurs lignes prometteuses.
+ */
+int compute_fork_bonus(game *g, int x, int y, int player) {
+    int dx[] = {1, 0, 1, 1};
+    int dy[] = {0, 1, 1, -1};
+    int threats_count = 0;
+    int bonus = 0;
+
+    for (int d = 0; d < 4; d++) {
+        int score = evaluate_line(g, x, y, dx[d], dy[d], player);
+        
+        // On compte les menaces créées ou complétées par ce coup
+        if (score >= OPEN_TWO) {
+            threats_count++;
+        }
+        // Un coup qui prépare un Open Three est très fort
+        if (score >= OPEN_THREE) {
+            bonus += 5000;
+        }
+    }
+
+    // Si le coup crée une intersection de 2 menaces ou plus
+    if (threats_count >= 2) {
+        return 15000 + bonus; // Bonus de fourchette
+    }
+    return bonus;
+}
+
+// On veut que l'IA privilégie les cases qui appartiennent à plusieurs lignes
+static int get_intersection_bonus(game *g, int x, int y, int player) {
+    int active_lines = 0;
+    int dx[] = {1, 0, 1, 1};
+    int dy[] = {0, 1, 1, -1};
+    
+    for (int d = 0; d < 4; d++) {
+        // Si la ligne dans cette direction a au moins une pierre du joueur
+        // et aucune pierre adverse, elle est "active".
+        int p_count = 0;
+        int o_count = 0;
+        int opponent = (player == P1) ? P2 : P1;
+        
+        for (int k = -4; k <= 4; k++) {
+            int nx = x + dx[d] * k;
+            int ny = y + dy[d] * k;
+            if (IS_VALID(nx, ny)) {
+                if (g->board[GET_INDEX(nx, ny)] == player) p_count++;
+                else if (g->board[GET_INDEX(nx, ny)] == opponent) o_count++;
+            }
+        }
+        if (p_count > 0 && o_count == 0) active_lines++;
+    }
+    return (active_lines > 1) ? (active_lines * 500) : 0;
+}
+
+int evaluate_line(game *g, int x, int y, int dx, int dy, int player) {
     int score = 0;
+    int cells[6]; 
+    int opponent = (player == P1) ? P2 : P1;
+    
+    for(int i=1; i<6; i++) {
+        int nx = x + dx*i;
+        int ny = y + dy*i;
+        if (IS_VALID(nx, ny)) cells[i] = g->board[GET_INDEX(nx, ny)];
+        else cells[i] = opponent; 
+    }
+
     int len = 1;
+    while(len < 6 && cells[len] == player) len++;
     
-    bool start_open = false; 
-    bool end_open = false;   
-    
-    // --- 1. SCAN POSITIF ---
-    int i = 1;
-    for (; i < 5; i++) {
-        int nx = x + dx * i;
-        int ny = y + dy * i;
-        if (!IS_VALID(nx, ny)) break;
-        int cell = g->board[GET_INDEX(nx, ny)]; 
-        if (cell == player) len++;
-        else if (cell == EMPTY) { end_open = true; break; } 
-        else break; 
-    }
-
-    // --- 2. SCAN NÉGATIF ---
-    int j = 1;
-    for (; j < 5; j++) {
-        int nx = x - dx * j;
-        int ny = y - dy * j;
-        if (!IS_VALID(nx, ny)) break;
-        int cell = g->board[GET_INDEX(nx, ny)];
-        if (cell == player) len++;
-        else if (cell == EMPTY) { start_open = true; break; }
-        else break;
-    }
-
-    int open_ends = (start_open ? 1 : 0) + (end_open ? 1 : 0);
-
-    // --- 3. SCORING CONTINU (Classique) ---
     if (len >= 5) return WIN_SCORE;
+    
+    int start_idx = GET_INDEX(x - dx, y - dy);
+    bool start_open = IS_VALID(x-dx, y-dy) && g->board[start_idx] == EMPTY;
+    bool end_open = (len < 6 && cells[len] == EMPTY);
+
     if (len == 4) {
-        if (open_ends == 2) score = OPEN_FOUR;      
-        else if (open_ends == 1) score = CLOSED_FOUR; 
-        else score = 100000; // Blocked 4 (Mort)
+        if (start_open && end_open) return OPEN_FOUR; // 10M
+        if (start_open || end_open) return CLOSED_FOUR; // 5M
     }
     else if (len == 3) {
-        if (open_ends == 2) score = OPEN_THREE;
-        else if (open_ends == 1) score = CLOSED_THREE;
+        if (start_open && end_open) return OPEN_THREE; // 2M
+        if (start_open || end_open) return CLOSED_THREE; // 50k
     }
     else if (len == 2) {
-        if (open_ends == 2) score = OPEN_TWO; 
-        else if (open_ends == 1) score = CLOSED_TWO;
+        if (start_open && end_open) return OPEN_TWO; // 1k
+        if (start_open || end_open) return CLOSED_TWO; // 100
     }
 
-    // --- 4. DÉTECTION AVANCÉE DES TROUS (GAPPED PATTERNS) ---
-    // CORRECTION MAJEURE : Détecter X_XXX, XX_XX, XXX_X comme WIN potentiel
-    
-    if (len < 5 && (start_open || end_open)) {
-        // --- Gap Positif (après la séquence) ---
-        if (end_open && i < 5) {
-            int gap_x = x + dx * i; // Position du premier EMPTY trouvé
-            int gap_y = y + dy * i;
-            
-            // Compter les pierres APRÈS le trou
-            int extra_len = 0;
-            for (int k = 1; k <= 4; k++) {
-                int ppx = gap_x + dx * k;
-                int ppy = gap_y + dy * k;
-                if (!IS_VALID(ppx, ppy)) break;
-                if (g->board[GET_INDEX(ppx, ppy)] == player) extra_len++;
-                else break;
-            }
-            
-            int virtual_len = len + extra_len;
-            
-            // GAPPED FOUR = Victoire imminente (un seul coup pour gagner)
-            if (virtual_len >= 4) {
-                // C'est un Gapped Four ! Score très élevé
-                if (score < CLOSED_FOUR) score = CLOSED_FOUR;
-                // Si c'est exactement 4 avec le trou = WIN en un coup
-                if (virtual_len == 4) score = OPEN_FOUR; // Traiter comme Open Four (menace de victoire)
-            }
-            else if (virtual_len == 3) {
-                if (start_open) {
-                    if (score < OPEN_THREE) score = OPEN_THREE;
-                } else {
-                    if (score < CLOSED_THREE) score = CLOSED_THREE;
-                }
-            }
+    // --- DETECTION DES TROUS (Gapped Patterns) ---
+    // Pattern X.XXX ou XXX.X (Gapped Four)
+    if (len < 4) {
+        if (cells[1] == EMPTY && cells[2] == player && cells[3] == player && cells[4] == player) {
+            return (start_open) ? OPEN_FOUR : CLOSED_FOUR;
         }
-
-        // --- Gap Négatif (avant la séquence) ---
-        if (start_open && j < 5) {
-            int gap_x = x - dx * j;
-            int gap_y = y - dy * j;
-            
-            int extra_len = 0;
-            for (int k = 1; k <= 4; k++) {
-                int mmx = gap_x - dx * k;
-                int mmy = gap_y - dy * k;
-                if (!IS_VALID(mmx, mmy)) break;
-                if (g->board[GET_INDEX(mmx, mmy)] == player) extra_len++;
-                else break;
-            }
-            
-            int virtual_len = len + extra_len;
-            
-            if (virtual_len >= 4) {
-                if (score < CLOSED_FOUR) score = CLOSED_FOUR;
-                if (virtual_len == 4) score = OPEN_FOUR;
-            }
-            else if (virtual_len == 3) {
-                if (end_open) {
-                    if (score < OPEN_THREE) score = OPEN_THREE;
-                } else {
-                    if (score < CLOSED_THREE) score = CLOSED_THREE;
-                }
-            }
+        if (cells[1] == player && cells[2] == EMPTY && cells[3] == player && cells[4] == player) {
+            return CLOSED_FOUR;
         }
     }
-    
+
     return score;
 }
 
-/* Fonction d'évaluation "Rayon X" */
+// Aide à évaluer une ligne complète passant par (x,y)
+static int evaluate_full_line(game *g, int x, int y, int dx, int dy, int player) {
+    int count = 1; // La pierre qu'on simule en (x,y)
+    int open_ends = 0;
+    int opponent = (player == P1) ? P2 : P1;
+
+    // On regarde vers l'avant
+    for (int i = 1; i <= 4; i++) {
+        int nx = x + dx * i, ny = y + dy * i;
+        if (!IS_VALID(nx, ny) || g->board[GET_INDEX(nx, ny)] == opponent) break;
+        if (g->board[GET_INDEX(nx, ny)] == player) count++;
+        else { open_ends++; break; } // Case vide
+    }
+    // On regarde vers l'arrière
+    for (int i = 1; i <= 4; i++) {
+        int nx = x - dx * i, ny = y - dy * i;
+        if (!IS_VALID(nx, ny) || g->board[GET_INDEX(nx, ny)] == opponent) break;
+        if (g->board[GET_INDEX(nx, ny)] == player) count++;
+        else { open_ends++; break; } // Case vide
+    }
+
+    if (count >= 5) return WIN_SCORE;
+    if (count == 4) return (open_ends == 2) ? OPEN_FOUR : CLOSED_FOUR;
+    if (count == 3) return (open_ends == 2) ? OPEN_THREE : CLOSED_THREE;
+    if (count == 2) return (open_ends == 2) ? OPEN_TWO : CLOSED_TWO;
+    return 0;
+}
+
 int get_point_score(game *g, int x, int y, int player) {
-    int total_score = 0;
-    total_score += evaluate_line(g, x, y, 1, 0, player);  
-    if (total_score >= WIN_SCORE) return WIN_SCORE;
-    total_score += evaluate_line(g, x, y, 0, 1, player);  
-    if (total_score >= WIN_SCORE) return WIN_SCORE;
-    total_score += evaluate_line(g, x, y, 1, 1, player);  
-    if (total_score >= WIN_SCORE) return WIN_SCORE;
-    total_score += evaluate_line(g, x, y, 1, -1, player); 
-    return total_score;
+    int total = 0;
+    int max_line = 0;
+    
+    // 1. Évaluation directionnelle classique
+    int d_scores[4];
+    d_scores[0] = evaluate_full_line(g, x, y, 1, 0, player);
+    d_scores[1] = evaluate_full_line(g, x, y, 0, 1, player);
+    d_scores[2] = evaluate_full_line(g, x, y, 1, 1, player);
+    d_scores[3] = evaluate_full_line(g, x, y, 1, -1, player);
+
+    for (int i = 0; i < 4; i++) {
+        if (d_scores[i] >= WIN_SCORE) return WIN_SCORE;
+        total += d_scores[i];
+        if (d_scores[i] > max_line) max_line = d_scores[i];
+    }
+
+    // 2. AJOUT : Bonus de Fourchette (Intersection)
+    // On ne donne le bonus que si on ne gagne pas déjà (max_line < WIN_SCORE)
+    total += compute_fork_bonus(g, x, y, player);
+
+    return total;
 }
 
 // Helper pour recalculer les scores globaux ET repérer la menace maximale unique
@@ -345,78 +474,142 @@ static void recalculate_scores(game *g, int *score_p1, int *score_p2, int *max_t
     }
 }
 
+/* Met à jour les statistiques (Score total + Compteurs de menaces) */
+static void update_stats(game *g, int player, int score, bool remove_mode) {
+    if (score == 0) return;
+
+    int lvl = get_threat_level(score);
+
+    if (remove_mode) {
+        g->pos_score[player] -= score;
+        g->threat_counts[player][lvl]--;
+    } else {
+        g->pos_score[player] += score;
+        g->threat_counts[player][lvl]++;
+    }
+
+    // Mise à jour paresseuse du Max Threat
+    // On part du haut (WIN) et on descend jusqu'à trouver un compteur > 0
+    for (int i = IDX_WIN; i >= 0; i--) {
+        if (g->threat_counts[player][i] > 0) {
+            g->max_threat_level[player] = i;
+            return;
+        }
+    }
+    g->max_threat_level[player] = 0;
+}
+
+/*
+ * Cœur de l'incrémental : Scanne une petite fenêtre autour de (x,y)
+ * pour trouver les "Têtes de lignes" impactées et mettre à jour leur score.
+ */
+void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
+    // Directions : Horizontal, Vertical, Diag1, Diag2
+    int dirs[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
+
+    for (int d = 0; d < 4; d++) {
+        int dx = dirs[d][0];
+        int dy = dirs[d][1];
+
+        // On regarde une fenêtre de [-5, +0] autour de x,y pour trouver les DÉBUTS de lignes
+        // qui pourraient passer par (x,y).
+        for (int k = -5; k <= 0; k++) {
+            int sx = x + k * dx;
+            int sy = y + k * dy;
+
+            if (!IS_VALID(sx, sy)) continue;
+
+            int p = g->board[GET_INDEX(sx, sy)];
+            if (p == EMPTY) continue;
+
+            // Vérifie si c'est bien le début d'une séquence pour ce joueur
+            // (C'est-à-dire que la case d'avant est hors-plateau ou d'une autre couleur)
+            int prev_x = sx - dx;
+            int prev_y = sy - dy;
+            bool is_start = false;
+
+            if (!IS_VALID(prev_x, prev_y)) {
+                is_start = true;
+            } else if (g->board[GET_INDEX(prev_x, prev_y)] != p) {
+                is_start = true;
+            }
+
+            if (is_start) {
+                // On évalue cette ligne qui passe potentiellement par (x,y)
+                // Note : On re-vérifie si elle passe vraiment par la zone d'impact si on veut optimiser,
+                // mais ici on réévalue simplement les têtes proches, ce qui est sûr et rapide.
+                int score = evaluate_line(g, sx, sy, dx, dy, p);
+                update_stats(g, p, score, remove_mode);
+            }
+        }
+    }
+}
+
+// Ajoute cette fonction helper
+int count_overlapping_threats(game *g, int player) {
+    int threats = 0;
+    // On parcourt les lignes pré-calculées par ai_data.c (ou on scanne léger)
+    // Ici, une heuristique simplifiée : 
+    // On regarde les cases vides qui ont plus d'une ligne active pour le joueur.
+    
+    // NOTE : Cela suppose que tu as accès aux données 'lines' ou que tu scannes.
+    // Si tu n'as pas de structure complexe, on va faire un scan heuristique rapide 
+    // sur les coups possibles de l'adversaire.
+    
+    // Version simplifiée : On compte combien de Open Threes l'adversaire a.
+    // Si > 1, c'est une fourchette potentielle.
+    int open_threes = 0;
+    int blocked_fours = 0; // Menace Closed Four
+    
+    // On utilise les données que tu as déjà dans g->max_threat_level ?
+    // Non, max_threat_level donne juste le MAX. On a besoin du COMPTE.
+    
+    // Il faudrait idéalement une fonction qui retourne le NOMBRE de menaces de niveau 3/4.
+    // Si cette info n'est pas dispo dans 'game', on l'estime via le score positionnel
+    // ou on modifie ai_data.c pour compter les menaces.
+    
+    return 0; // Placeholder si pas implémentable facilement
+}
+
+/*
+ * Nouvelle version O(1) de evaluate_board
+ * Elle utilise les valeurs pré-calculées.
+ */
 int evaluate_board(game *g, int player) {
     int opponent = (player == P1) ? P2 : P1;
-    
-    int current_p1_score = 0;
-    int current_p2_score = 0;
-    int max_p1_threat = 0;
-    int max_p2_threat = 0;
 
-    recalculate_scores(g, &current_p1_score, &current_p2_score, &max_p1_threat, &max_p2_threat);
+    // 1. Victoires Absolues (Alignements ou 10 captures)
+    if (g->max_threat_level[player] == IDX_WIN) return WIN_SCORE;
+    if (g->max_threat_level[opponent] == IDX_WIN) return -WIN_SCORE;
+    if (g->captures[player] >= 5) return WIN_SCORE;
+    if (g->captures[opponent] >= 5) return -WIN_SCORE;
 
-    int my_score = (player == P1) ? current_p1_score : current_p2_score;
-    int opp_score = (player == P1) ? current_p2_score : current_p1_score;
-    
-    int opp_max_threat = (player == P1) ? max_p2_threat : max_p1_threat;
-    int my_max_threat = (player == P1) ? max_p1_threat : max_p2_threat;
+    // 2. Score de base basé sur les alignements
+    long long final_score = g->pos_score[player] - (long long)(g->pos_score[opponent] * 1.5);
 
-    // 1. Victoire/Défaite absolue
-    if (opp_max_threat >= WIN_SCORE || g->captures[opponent] >= 5) return -WIN_SCORE; 
-    if (my_max_threat >= WIN_SCORE || g->captures[player] >= 5) return WIN_SCORE;
+    // 3. Gestion dynamique des captures
+    // Plus l'adversaire approche des 5 paires, plus chaque capture adverse est pénalisée lourdement
+    int opp_caps = g->captures[opponent];
+    int my_caps = g->captures[player];
 
-    // 2. Score de base
-    long long final_score = (long long)my_score - (long long)opp_score;
-    
-    // 3. Panique Proportionnelle (simplifiée avec la nouvelle échelle)
-    if (opp_max_threat >= OPEN_THREE) {
-        if (my_max_threat < CLOSED_FOUR) {
-            final_score -= (long long)(opp_max_threat * 3);
-        } else {
-            final_score -= (long long)(opp_max_threat);
-        }
-    } else if (opp_max_threat >= CLOSED_THREE) {
-        final_score -= (long long)(opp_max_threat * 2);
-    }
+    // Bonus pour mes captures
+    if (my_caps == 4) final_score += 1000000; // Un cran avant la victoire
+    final_score += (my_caps * CAPTURE_BONUS);
 
-    // 4. Captures (valeur augmentée)
-    final_score += (g->captures[player] * CAPTURE_BONUS); 
-    final_score -= (g->captures[opponent] * CAPTURE_BONUS);
-    
-    // 5. (NOUVEAU) Pénalité pour paires vulnérables
+    // Malus exponentiel pour les captures adverses
+    if (opp_caps == 3) final_score -= 500000;
+    if (opp_caps == 4) final_score -= 5000000; // Alerte rouge : une seule capture et je perds
+
+    // 4. Protection contre le "Bait" (l'appât)
+    // Si j'ai des paires vulnérables, je réduis mon score car ma position est fragile
     int my_vulnerable = count_vulnerable_pairs(g, player);
-    int opp_vulnerable = count_vulnerable_pairs(g, opponent);
-    
-    // Chaque paire vulnérable est un risque, surtout si l'adversaire capture déjà
-    int vulnerability_penalty = my_vulnerable * 25000;
-    if (g->captures[opponent] >= 2) {
-        vulnerability_penalty *= 2; // Double pénalité si l'adversaire capture déjà
-    }
-    if (g->captures[opponent] >= 3) {
-        vulnerability_penalty *= 2; // Quadruple pénalité si proche de la victoire
-    }
-    final_score -= vulnerability_penalty;
-    
-    // Bonus pour paires adverses vulnérables (opportunité de capture)
-    int vulnerability_bonus = opp_vulnerable * 20000;
-    if (g->captures[player] >= 2) {
-        vulnerability_bonus *= 2;
-    }
-    final_score += vulnerability_bonus;
-    
-    // 6. (NOUVEAU) Bonus/Malus basé sur l'écart de captures
-    int capture_diff = g->captures[player] - g->captures[opponent];
-    if (capture_diff > 0) {
-        // On a l'avantage en captures
-        final_score += capture_diff * 30000;
-    } else if (capture_diff < 0) {
-        // L'adversaire a l'avantage en captures
-        final_score += capture_diff * 40000; // Pénalité plus forte
+    if (my_vulnerable > 0) {
+        final_score -= (my_vulnerable * (opp_caps + 1) * 100000);
     }
 
-    // 7. Clamp
-    if (final_score > WIN_SCORE - 1) final_score = WIN_SCORE - 1;
-    if (final_score < -WIN_SCORE + 1) final_score = -WIN_SCORE + 1;
+    // Clamping final
+    if (final_score >= WIN_SCORE) final_score = WIN_SCORE - 1000;
+    if (final_score <= -WIN_SCORE) final_score = -WIN_SCORE + 1000;
 
     return (int)final_score;
 }
@@ -515,23 +708,35 @@ int check_free_three_pattern(game *g, int x, int y, int dx, int dy, int player) 
     return 0;
 }
 
-/* Vérifie la règle du Double-Three */
 bool is_double_three(game *g, int idx, int player) {
+
     int x = GET_X(idx);
     int y = GET_Y(idx);
-    
-    // Vérifier que la case est vide
-    if (g->board[idx] != EMPTY) return false;
 
-    int free_threes = 0;
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
 
+    g->board[idx] = player;
+    
+    int open_three_count = 0;
+    
     for (int d = 0; d < 4; d++) {
-        if (check_free_three_pattern(g, x, y, dx[d], dy[d], player)) {
-            free_threes++;
-            if (free_threes >= 2) return true; // Optimisation : on arrête dès qu'on en a 2
+        int score = evaluate_line(g, x, y, dx[d], dy[d], player);
+        
+        // STRICTEMENT Open Three (pas Four)
+        if (score == OPEN_THREE) {
+            open_three_count++;
         }
+    }
+    
+    g->board[idx] = EMPTY;
+    
+    // Exception: Capture annule l'interdiction
+    if (open_three_count >= 2) {
+        g->board[idx] = player;
+        int caps = count_potential_captures(g, x, y, player);
+        g->board[idx] = EMPTY;
+        return (caps == 0); // Autorisé si capture
     }
     
     return false;
