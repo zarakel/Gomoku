@@ -1,14 +1,22 @@
 #include "../include/gomoku.h"
 
-/* helper: checks if coordinates are on board */
+/**
+ * Verifie si les coordonnees sont dans les limites du plateau.
+ */
 bool in_bounds(int x, int y)
 {
     return (x >= 0 && y >= 0 && x < BOARD_SIZE && y < BOARD_SIZE);
 }
 
-/* helper: logic to find captures. 
-   Fills 'removed_indices' with the 1D index of stones to remove.
-   Returns the number of stones marked for removal. */
+/**
+ * Detecte les captures de paires autour d'un coup joue.
+ * 
+ * Pattern de capture : ALLY - ENEMY - ENEMY - ALLY
+ * Scanne les 8 directions pour trouver les paires adverses encadrees.
+ * 
+ * Remplit removed_indices avec les indices 1D des pierres a capturer.
+ * Retourne le nombre de pierres marquees pour capture (toujours pair).
+ */
 int get_captures_indices(game *gameData, int lx, int ly, int removed_indices[10])
 {
     int owner = gameData->board[GET_INDEX(lx, ly)];
@@ -52,7 +60,12 @@ int get_captures_indices(game *gameData, int lx, int ly, int removed_indices[10]
     return count;
 }
 
-/* Main function: Validates, Updates Board, Updates Score */
+/**
+ * Fonction principale de gestion des captures.
+ * 
+ * Valide le coup, detecte les captures, met a jour le plateau et l'affichage.
+ * Incremente le compteur de paires capturees du joueur.
+ */
 void checkPieceCapture(game *gameData, screen *windows, int lx, int ly)
 {
     // 1. Validation basique
@@ -90,6 +103,52 @@ void checkPieceCapture(game *gameData, screen *windows, int lx, int ly)
         // On notifie que l'écran a changé
         windows->changed = true;
     }
+}
+
+/**
+ * Compte les paires vulnerables apres avoir simule un coup.
+ * 
+ * Une paire est vulnerable si elle peut etre capturee par l'adversaire au coup suivant.
+ * Utilise pour evaluer le risque d'un coup avant de le jouer.
+ */
+int count_vulnerable_pairs_after_move(game *g, int idx, int player) {
+    if (g->board[idx] != EMPTY) return 0;
+    
+    int opponent = (player == P1) ? P2 : P1;
+    int vulnerable = 0;
+    
+    // Simuler le coup
+    g->board[idx] = player;
+    
+    // 4 directions principales (on ne compte pas les diagonales en double)
+    const int dirs[4][2] = {{1,0}, {0,1}, {1,1}, {1,-1}};
+    
+    for (int d = 0; d < 4; d++) {
+        int dx = dirs[d][0], dy = dirs[d][1];
+        int x = GET_X(idx), y = GET_Y(idx);
+        
+        // Vérifier pattern : EMPTY - PLAYER - PLAYER - EMPTY
+        // (vulnérable car adversaire peut capturer en jouant aux extrémités)
+        int x_neg = x - dx, y_neg = y - dy;
+        int x_pos1 = x + dx, y_pos1 = y + dy;
+        int x_pos2 = x + 2*dx, y_pos2 = y + 2*dy;
+        
+        if (IS_VALID(x_neg, y_neg) && IS_VALID(x_pos2, y_pos2)) {
+            int idx_neg = GET_INDEX(x_neg, y_neg);
+            int idx_pos1 = GET_INDEX(x_pos1, y_pos1);
+            int idx_pos2 = GET_INDEX(x_pos2, y_pos2);
+            
+            // Pattern vulnérable
+            if (g->board[idx_neg] == EMPTY && 
+                g->board[idx_pos1] == player && 
+                g->board[idx_pos2] == EMPTY) {
+                vulnerable++;
+            }
+        }
+    }
+    
+    g->board[idx] = EMPTY;
+    return vulnerable;
 }
 
 // Version optimisée pour l'IA : remplit la structure Undo et ne dessine rien

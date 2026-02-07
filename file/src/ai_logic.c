@@ -1,5 +1,17 @@
 #include "../include/gomoku.h"
 
+/**
+ * Applique un coup sur le plateau avec evaluation incrementale.
+ * 
+ * Etapes :
+ * 1. Sauvegarde l'etat pour undo
+ * 2. Retire les anciens scores des lignes impactees
+ * 3. Pose la pierre et met a jour le hash Zobrist
+ * 4. Ajoute les nouveaux scores crees par la pierre
+ * 5. Gere les captures et met a jour les scores autour
+ * 
+ * Complexite : O(1) grace a l'evaluation incrementale
+ */
 void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
@@ -21,14 +33,16 @@ void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     // On ajoute les nouveaux scores créés par cette pierre
     update_impacted_scores(g, x, y, false); // false = add
 
-    // 5. GESTION DES CAPTURES
+    // GESTION DES CAPTURES
+    // Detecte et applique les captures de paires adverses
+    // Une capture = 2 pierres adjacentes entourees par nos pierres
     int captured_indices[10];
     int nb_cap = apply_captures_for_ai(g, x, y, player, captured_indices);
     
     undo->captured_count = nb_cap;
     
-    // --- AJOUT CORRECTIF ICI ---
-    // On met à jour le compteur de paires capturées (nb_cap est en pierres, donc / 2)
+    // Mise a jour du compteur de paires capturees
+    // nb_cap est en pierres individuelles, on divise par 2 pour obtenir les paires
     if (nb_cap > 0) {
         g->captures[player] += (nb_cap / 2);
     }
@@ -61,6 +75,11 @@ void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     }
 }
 
+/**
+ * Annule un coup applique precedemment.
+ * Restaure le plateau, les captures, et les scores incrementaux.
+ * DOIT etre appele dans l'ordre inverse de apply_move pour garantir la coherence.
+ */
 void undo_move(game *g, int player, MoveUndo *undo) {
     int idx = undo->move_idx;
     int x = GET_X(idx);
@@ -100,6 +119,11 @@ void undo_move(game *g, int player, MoveUndo *undo) {
     update_impacted_scores(g, x, y, false);
 }
 
+/**
+ * Met a jour les compteurs de menaces lorsqu'une ligne change de valeur.
+ * Retire l'ancien niveau de menace et ajoute le nouveau.
+ * Recalcule le niveau de menace maximum du joueur.
+ */
 void update_line_stats(game *g, int player, int old_score, int new_score) {
     // 1. Retirer l'ancienne menace
     if (old_score != 0) { // Si c'était 0 (vide), rien à retirer

@@ -1,20 +1,24 @@
 #include "../include/gomoku.h"
 
-/*
- * ============================================================================
- * CRISIS DETECTION ENGINE
- * ============================================================================
- * Détecte si l'adversaire a des menaces imparables et calcule le niveau de crise.
+/**
+ * Moteur de detection de situations critiques.
  * 
- * Crisis Levels:
+ * Analyse le plateau pour detecter les menaces adverses imparables.
+ * Calcule un niveau de crise (0-3) selon la gravite de la situation.
+ * 
+ * Niveaux de crise :
  * 0 = Pas de crise (jeu normal)
- * 1 = Menace sérieuse (Open 3 ou mieux)
- * 2 = Menace critique (Open 4 ou 2+ Open 3)
- * 3 = Mort imminente (Multiple Open 4 ou VCF détecté)
+ * 1 = Menace serieuse (Open 3 ou mieux)
+ * 2 = Menace critique (Open 4 ou plusieurs Open 3)
+ * 3 = Mort imminente (Plusieurs Open 4 ou VCF detecte)
+ * 
+ * Note : Le systeme de crise est INFORMATIF uniquement.
+ * Il ne force plus les coups (cette logique a ete supprimee dans makeIaMove).
  */
 
-/*
- * Vérifie si 'idx' est un coup gagnant immédiat pour 'opponent'
+/**
+ * Verifie si jouer a l'index 'idx' est une victoire immediate pour 'opponent'.
+ * Teste la victoire par alignement (5) et par capture (5 paires).
  */
 bool is_winning_threat(game *g, int idx, int opponent) {
     if (g->board[idx] != EMPTY) return false;
@@ -34,8 +38,15 @@ bool is_winning_threat(game *g, int idx, int opponent) {
     
     return false;
 }
-/*
- * Compte les menaces sérieuses de l'adversaire
+
+/**
+ * Compte les menaces immediates serieuses de l'adversaire.
+ * 
+ * Scanne la bounding box autour des pierres existantes.
+ * Detecte les coups adverses qui creent des menaces OPEN_FOUR ou superieures.
+ * 
+ * Remplit threat_moves avec les indices des coups menacants (max 10).
+ * Retourne le nombre de menaces detectees.
  */
 static int count_immediate_threats(game *g, int opponent, int *threat_moves) {
     int count = 0;
@@ -83,10 +94,18 @@ static int count_immediate_threats(game *g, int opponent, int *threat_moves) {
     return count;
 }
 
-/*
- * Analyse la situation et met à jour le crisis state
-*/
-
+/**
+ * Analyse la situation actuelle et met a jour l'etat de crise.
+ * 
+ * Detecte dans l'ordre :
+ * 1. Victoires immediates adverses (niveau 3)
+ * 2. Menaces Open Four (niveau 2-3)
+ * 3. Menaces Open Three multiples (niveau 1-2)
+ * 4. Danger de capture (5eme paire adverse)
+ * 
+ * Met a jour les champs g->in_crisis, g->crisis_level, g->crisis_moves.
+ * Cette fonction est INFORMATIVE uniquement (les coups ne sont plus forces automatiquement).
+ */
 void update_crisis_state(game *g, int ia_player) {
     int opponent = (ia_player == P1) ? P2 : P1;
     

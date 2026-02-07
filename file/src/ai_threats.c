@@ -1,38 +1,25 @@
 #include "../include/gomoku.h"
 
-/*
- * ai_threats.c - Détection et analyse des menaces
+/**
+ * Module de detection et analyse des menaces.
  * 
- * Responsabilité unique : Détecter les menaces sur le plateau
- * - Menaces existantes (alignements déjà formés)
- * - Menaces potentielles (si un joueur joue à une case)
- * - Patterns gappés (X_XXX, .X_XX.)
+ * Fonctions principales :
+ * - Comptage des menaces serieuses existantes
+ * - Evaluation de coups avec captures
+ * - Detection de patterns gappes
+ * 
+ * Une menace est une formation qui peut evoluer vers la victoire
+ * (alignements de 3+ pierres avec espaces libres).
  */
 
-
-/* Dans ai_threats.c ou heuristics.c */
-
-// static int count_empty_neighbors(game *g, int idx) {
-//     if (idx == -1) return 0;
-    
-//     int x = GET_X(idx);
-//     int y = GET_Y(idx);
-//     int count = 0;
-    
-//     for (int dy = -1; dy <= 1; dy++) {
-//         for (int dx = -1; dx <= 1; dx++) {
-//             if (dx == 0 && dy == 0) continue;
-//             int nx = x + dx;
-//             int ny = y + dy;
-//             if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] == EMPTY) {
-//                 count++;
-//             }
-//         }
-//     }
-    
-//     return count;
-// }
-
+/**
+ * Compte les menaces serieuses d'un joueur sur le plateau.
+ * 
+ * Une menace serieuse = 3+ pierres alignees avec au moins 1 extremite ouverte.
+ * Scanne les 4 directions pour chaque pierre du joueur.
+ * 
+ * Retourne le nombre total de menaces detectees.
+ */
 int count_serious_threats(game *g, int player) {
     int threat_count = 0;
     int dx[] = {1, 0, 1, 1};
@@ -84,11 +71,20 @@ int count_serious_threats(game *g, int player) {
     return threat_count;
 }
 
-/* ============================================================================
- * ÉVALUATION D'UN COUP AVEC CAPTURES
- * Simule le coup, applique les captures, retourne le meilleur score
- * ============================================================================ */
-
+/**
+ * Evalue completement un coup en tenant compte des captures.
+ * 
+ * Lorsqu'un coup capture des pierres adverses, il peut creer de nouvelles
+ * opportunites d'alignement en vidant des cases.
+ * 
+ * Cette fonction :
+ * 1. Simule le coup et les captures
+ * 2. Evalue le score de base
+ * 3. Re-scanne les lignes passant par les cases liberees
+ * 4. Cherche les nouveaux alignements crees par les trous
+ * 
+ * Retourne le meilleur score trouve apres capture.
+ */
 int evaluate_move_with_captures_full(game *g, int idx, int player) {
     MoveUndo undo;
     apply_move(g, idx, player, &undo);

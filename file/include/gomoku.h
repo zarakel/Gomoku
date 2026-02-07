@@ -102,6 +102,7 @@
 // 3. MENACES MAJEURES
 #define SORT_WIN_CAPTURE   40000000 
 #define SORT_THREAT_MAX    30000000 // Pour les menaces très fortes
+#define SORT_FORK          18000000 // Double-fork offensif (fourchette)
 
 // 4. AUTRES
 #define SORT_CAPTURE       5000000
@@ -226,10 +227,12 @@ void    checkPieceCapture(game *gameData, screen *windows, int lx, int ly);
 int     apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_indices_buffer);
 int     count_vulnerable_pairs(game *g, int player);
 int     find_capture_move(game *g, int player);
+int     count_vulnerable_pairs_after_move(game *g, int idx, int player);
 
 // heuristics.c 
 int     evaluate_board(game *g, int player);
 int     get_point_score(game *g, int x, int y, int player);
+int     get_point_score_fast(game *g, int x, int y, int player);
 bool    is_double_three(game *g, int idx, int player);
 void    explain_double_three(game *g, int idx, int player);
 void    refresh_board_stats(game *g);

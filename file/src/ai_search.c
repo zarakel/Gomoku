@@ -1,20 +1,27 @@
 #include "../include/gomoku.h"
 #include <limits.h>
 
-/* ============================================================================
- * HELPER : Vérification du temps
- * ============================================================================ */
+/**
+ * Verifie si le temps imparti est ecoule.
+ * Permet d'interrompre la recherche avant le timeout du systeme.
+ */
 static inline bool is_timeout(clock_t start_time) {
     return ((double)(clock() - start_time) / CLOCKS_PER_SEC >= (double)TIME_LIMIT_MS / 1000.0);
 }
 
-/* ============================================================================
- * QUIESCENCE SEARCH (Style Negamax)
- * ============================================================================ */
+/**
+ * Recherche de quiescence : prolonge la recherche dans les positions tactiquement instables.
+ * 
+ * Evite l'effet d'horizon en evaluant les captures et menaces immediates au-dela de la profondeur limite.
+ * N'explore que les coups "bruyants" (captures, menaces fortes) jusqu'a une position calme.
+ * 
+ * Retourne le score de la position, ou TIMEOUT_CODE si le temps est ecoule.
+ */
 static int quiescence_search(game *g, int alpha, int beta, int player, int qs_depth, clock_t start_time) {
     if ((debug_node_count & 127) == 0 && is_timeout(start_time)) return TIMEOUT_CODE;
 
-    // Stand Pat
+    // Stand Pat : evaluation statique de la position actuelle
+    // Si cette evaluation est deja suffisante (cutoff beta), on peut arreter
     int stand_pat = evaluate_board(g, player);
 
     if (qs_depth <= 0) return stand_pat;
@@ -26,10 +33,15 @@ static int quiescence_search(game *g, int alpha, int beta, int player, int qs_de
 
     // Génération des coups (Captures et Menaces)
     MoveCandidate moves[MAX_BOARD];
-    int count = generate_moves(g, moves, player, -1, -1); 
+    int count = generate_moves(g, moves, player, -1, -1);
+    int opponent = (player == P1) ? P2 : P1;
 
     for (int i = 0; i < count; i++) {
-        if (!moves[i].is_capture && moves[i].score_estim < OPEN_THREE) continue;
+        // AMÉLIORATION : Toujours explorer les captures + menaces sérieuses
+        if (!moves[i].is_capture && moves[i].score_estim < CLOSED_THREE) continue;
+        
+        // Vérifier si on est proche de la mort par capture
+        if (g->captures[opponent] >= 4 && !moves[i].is_capture) continue; // Focus captures
 
         int idx = moves[i].index;
         if (is_double_three(g, idx, player)) continue;
@@ -42,7 +54,6 @@ static int quiescence_search(game *g, int alpha, int beta, int player, int qs_de
             return WIN_SCORE;
         }
 
-        int opponent = (player == P1) ? P2 : P1;
         int score = -quiescence_search(g, -beta, -alpha, opponent, qs_depth - 1, start_time);
 
         undo_move(g, player, &undo);
@@ -55,16 +66,26 @@ static int quiescence_search(game *g, int alpha, int beta, int player, int qs_de
     return alpha;
 }
 
-/* ============================================================================
- * NEGAMAX (Avec PVS et Iterative Deepening)
- * ============================================================================ */
+/**
+ * Algorithme Negamax avec elagage alpha-beta et Principal Variation Search.
+ * 
+ * Variante simplifiee de Minimax exploitant la symetrie : max(a,b) = -min(-a,-b).
+ * Optimisations :
+ * - Table de transposition (evite de recalculer les positions deja vues)
+ * - Elagage alpha-beta (coupe les branches inutiles)
+ * - PVS (recherche optimiste avec fenetre nulle apres le premier coup)
+ * - Quiescence search (prolonge la recherche dans les positions tactiques)
+ * 
+ * Retourne le score de la position du point de vue du joueur courant.
+ */
 int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_time) {
     debug_node_count++;
 
-    // 1. Timeout Check
+    // Verification du timeout (tous les 256 noeuds pour limiter l'overhead)
     if ((debug_node_count & 255) == 0 && is_timeout(start_time)) return TIMEOUT_CODE;
 
-    // 2. Transposition Table Probe
+    // Consultation de la table de transposition
+    // Si cette position a deja ete evaluee a une profondeur suffisante, reutiliser le resultat
     int original_alpha = alpha;
     TTEntry *entry = tt_probe(g->current_hash);
     if (entry != NULL && entry->depth >= depth) {
@@ -81,14 +102,15 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
         }
     }
 
-    // 3. Évaluation Terminale
+    // Evaluation terminale : victoire/defaite ou profondeur limite atteinte
+    // Si victoire detectee, retourner un score ajuste par la profondeur (favorise les victoires rapides)
     int current_eval = evaluate_board(g, player);
     if (abs(current_eval) >= WIN_SCORE - 1000) {
         return (current_eval > 0) ? (WIN_SCORE + depth) : (-WIN_SCORE - depth);
     }
 
     if (depth <= 0) {
-        return quiescence_search(g, alpha, beta, player, 2, start_time);
+        return quiescence_search(g, alpha, beta, player, 4, start_time);
     }
 
     // 4. Génération

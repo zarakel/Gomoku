@@ -1,8 +1,21 @@
 #include "../include/gomoku.h"
 
-/*
- * Compte les menaces créées (Open 3 ou mieux).
- * Optimisé pour ne pas surévaluer les coups illégaux.
+/**
+ * Module de detection des menaces multiples et fourchettes.
+ * 
+ * Fonctions principales :
+ * - Comptage des menaces creees par un coup
+ * - Detection des fourchettes (double/triple menaces simultanees)
+ * - Calcul du potentiel de jonction d'une case
+ */
+
+/**
+ * Compte le nombre de menaces (OPEN_THREE ou mieux) creees par un coup.
+ * 
+ * Simule le coup temporairement et evalue les 4 directions.
+ * Verifie la legalite (regle du double-three).
+ * 
+ * Retourne le nombre de menaces creees (0 si coup illegal).
  */
 int count_created_threats(game *g, int idx, int player) {
     if (g->board[idx] != EMPTY) return 0;
@@ -33,8 +46,15 @@ int count_created_threats(game *g, int idx, int player) {
     return threats_count;
 }
 
-/*
- * Détecte les fourchettes (Double attaque simultanée)
+/**
+ * Calcule la valeur strategique d'une fourchette.
+ * 
+ * Une fourchette est un coup qui cree simultanement plusieurs menaces.
+ * L'adversaire ne peut bloquer qu'une menace a la fois, donc :
+ * - Double fourchette (2 menaces) : Tres dangereux
+ * - Triple fourchette (3+ menaces) : Quasiment imparable
+ * 
+ * Retourne un score tres eleve si fourchette detectee, 0 sinon.
  */
 int compute_fork_value(game *g, int idx, int player) {
     // Vérification rapide avant calcul coûteux
@@ -42,18 +62,28 @@ int compute_fork_value(game *g, int idx, int player) {
 
     int threats = count_created_threats(g, idx, player);
     
-    if (threats >= 2) {
-        // FOURCHETTE DÉTECTÉE !
-        // Score : Juste sous la victoire immédiate, mais au-dessus de tout blocage
-        // WIN_SCORE (20M) > SORT_WIN_IMMEDIATE (20M) > FORK (18M) > BLOCK (15M)
-        return SORT_WIN_IMMEDIATE - 2000000; 
+    if (threats >= 3) {
+        // TRIPLE FOURCHETTE ! Presque imparable
+        // Score légèrement inférieur à la victoire immédiate
+        return SORT_WIN_IMMEDIATE - 500000;
+    } else if (threats == 2) {
+        // DOUBLE FOURCHETTE CLASSIQUE
+        // L'adversaire ne peut bloquer qu'une seule menace
+        // Score : Priorité offensive maximale
+        return SORT_FORK;
     }
     
     return 0;
 }
 
-/*
- * Potentiel de jonction (Pré-filtre heuristique)
+/**
+ * Calcule le potentiel de jonction d'une case.
+ * 
+ * Une jonction est une case ou plusieurs lignes de pierres se croisent.
+ * Plus une case a de jonctions, plus elle est strategiquement importante.
+ * 
+ * Compte le nombre de directions (sur 4) contenant des pierres alliees proches.
+ * Retourne le nombre de croisements detectes (0-4).
  */
 int compute_junction_potential(game *g, int idx, int player) {
     if (g->board[idx] != EMPTY) return 0;

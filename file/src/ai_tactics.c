@@ -1,54 +1,89 @@
 // src/ai_tactics.c
 #include "../include/gomoku.h"
 
-#define VCF_MAX_DEPTH 20
-#define VCF_TIME_LIMIT 0.25 // 250ms max alloués à la panique défensive
+/**
+ * Module de tactiques avancees : VCF (Victory by Continuous Forcing).
+ * 
+ * Le VCF est une technique de recherche de sequences forcees menant a la victoire.
+ * L'attaquant joue des coups qui forcent l'adversaire a repondre (menaces OPEN_FOUR),
+ * jusqu'a creer une situation gagnante imparable.
+ * 
+ * Optimisations :
+ * - Generation legere (coups forçants uniquement)
+ * - Cache des resultats VCF
+ * - Limite de temps stricte (400ms)
+ * - Profondeur maximale 30 plies
+ */
 
-// Global cache (déclarer au début du fichier)
-static int vcf_cache[MAX_BOARD]; // -1 = non testé, 0 = échec, 1 = succès
-static uint64_t vcf_cache_hash = 0;
+#define VCF_MAX_DEPTH 30
+#define VCF_TIME_LIMIT 0.40 // 400ms max alloues au VCF (offensif et defensif)
 
-/* * Génère uniquement les coups qui attaquent (Créent un 4)
- * Retourne le nombre de coups trouvés.
+// Cache global pour eviter de recalculer les memes positions
+static int vcf_cache[MAX_BOARD];      // -1 = non teste, 0 = echec, 1 = succes
+static uint64_t vcf_cache_hash = 0;   // Hash de la position en cache
+
+/**
+ * Genere uniquement les coups forçants (creant des menaces OPEN_THREE ou mieux).
+ * 
+ * Optimisations :
+ * - Scanne uniquement les cases proches des pierres existantes (rayon 2)
+ * - Utilise get_point_score_fast() au lieu de l'evaluation complete
+ * - Verifie la regle du double-three
+ * - Limite le nombre de coups retournes (max 30)
+ * 
+ * Retourne le nombre de coups d'attaque trouves.
  */
 static int generate_attacking_moves(game *g, int player, MoveVCF *moves) {
     int count = 0;
     int opponent = (player == P1) ? P2 : P1;
     
-    // On peut optimiser en ne scannant que les zones pertinentes, 
-    // mais pour l'instant scan global rapide via les heuristiques
-    // Idéalement : utiliser une liste des 'coups candidats' maintenue incrémentalement
+    // OPTIMISATION VCF : Génération légère sans appeler generate_moves
+    // Scanner uniquement les cases proches des pierres existantes
     
-    // Pour simplifier ici : on utilise generate_moves existant mais on filtre drastiquement
-    MoveCandidate candidates[MAX_BOARD];
-    int raw_count = generate_moves(g, candidates, player, 0, -1);
-    
-    for (int i = 0; i < raw_count; i++) {
-        int idx = candidates[i].index;
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] != EMPTY) continue;
         
-        // Optimisation : On ne teste que les coups prometteurs
-        if (candidates[i].score_estim < CLOSED_THREE) continue; 
-
+        int x = GET_X(idx), y = GET_Y(idx);
+        
+        // Filtre rapide : case doit avoir au moins un voisin dans rayon 2
+        bool has_neighbor = false;
+        for (int dy = -2; dy <= 2 && !has_neighbor; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                int nx = x + dx, ny = y + dy;
+                if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] != EMPTY) {
+                    has_neighbor = true;
+                    break;
+                }
+            }
+        }
+        if (!has_neighbor) continue;
+        
+        // Vérifier règle double-three
         if (is_double_three(g, idx, player)) continue;
 
-        // Simulation légère
+        // Simulation légère avec évaluation RAPIDE
         g->board[idx] = player;
-        int score = get_point_score(g, GET_X(idx), GET_Y(idx), player);
+        int score = get_point_score_fast(g, x, y, player); // FAST au lieu de normal
         g->board[idx] = EMPTY;
 
-        // Est-ce un coup forçant ? (Victoire ou Open 4 ou Closed 4 qui force une réponse)
-        // Note: OPEN_THREE n'est pas strictement "VCF" car l'adversaire n'est pas *obligé* de répondre immédiatement 
-        // s'il a une menace plus forte, mais dans un VCF strict, on cherche les FOURS.
-        if (score >= CLOSED_FOUR) { 
+        // Coup forçant : OPEN_THREE ou mieux (réduit le seuil)
+        if (score >= OPEN_THREE) { 
             moves[count].move_idx = idx;
             moves[count].score = score;
             count++;
+            if (count >= 30) break; // Limite pour éviter explosion
         }
     }
     return count;
 }
 
-/* * Génère les défenses forcées (Bloquer un 4) 
+/**
+ * Genere les coups defensifs pour bloquer une menace.
+ * 
+ * Utilise generate_moves() pour obtenir les coups pertinents,
+ * puis filtre pour garder uniquement ceux avec une valeur defensive suffisante.
+ * 
+ * Retourne le nombre de coups defensifs trouves.
  */
 static int generate_defensive_moves(game *g, int defender, MoveVCF *moves) {
     int count = 0;
@@ -73,14 +108,25 @@ static int generate_defensive_moves(game *g, int defender, MoveVCF *moves) {
     return count;
 }
 
-/*
- * Moteur VCF Récursif (Offensif)
- * Retourne TRUE si 'attacker' peut gagner forcément
+/**
+ * Moteur de recherche VCF recursif.
+ * 
+ * Principe :
+ * 1. L'attaquant joue un coup forçant (menace OPEN_FOUR ou mieux)
+ * 2. Le defenseur est oblige de bloquer (un seul coup possible ou tres peu)
+ * 3. L'attaquant joue un nouveau coup forçant
+ * 4. Repetition jusqu'a victoire ou echec
+ * 
+ * Retourne true si une sequence gagnante forcee existe, false sinon.
+ * 
+ * Limites :
+ * - Profondeur maximale : VCF_MAX_DEPTH (30 plies)
+ * - Temps maximal : VCF_TIME_LIMIT (400ms)
  */
 bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
     // 1. Check Limites
     if (depth > VCF_MAX_DEPTH) return false;
-    if ((double)(clock() - start_time) / CLOCKS_PER_SEC > 0.15) return false;
+    if ((double)(clock() - start_time) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) return false;
     int defender = (attacker == P1) ? P2 : P1;
 
     // 2. Check Victoire Immédiate (Déjà gagné ?)
@@ -148,8 +194,9 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
     return false; // Aucune attaque ne garantit la victoire
 }
 
-/*
- * Fonction Wrapper pour l'extérieur
+/**
+ * Wrapper public pour lancer une recherche VCF.
+ * Interface simplifiee pour les autres modules.
  */
 bool has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit) {
     (void)max_depth; // Paramètre inutilisé pour l'instant
@@ -577,7 +624,7 @@ int find_winning_vcf(game *g, int attacker) {
         }
         
         // B. Est-ce que ce coup force la victoire (VCF récursif) ?
-        bool vcf_found = has_vcf_win(g, attacker, 1, 12, 
+        bool vcf_found = has_vcf_win(g, attacker, 1, 6, 
                                       (double)(clock() - start)/CLOCKS_PER_SEC + time_limit);
         
         undo_move(g, attacker, &undo);

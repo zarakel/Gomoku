@@ -1,5 +1,11 @@
 #include "../include/gomoku.h"
 
+/**
+ * Callback de redimensionnement de la fenetre.
+ * 
+ * Recree les images graphiques avec les nouvelles dimensions.
+ * S'assure que les elements UI (textes, boutons) restent au-dessus de l'image de fond.
+ */
 void resize(int32_t width, int32_t height, void *param)
 {
     screen *windows = (struct screen *)param;
@@ -31,6 +37,10 @@ void resize(int32_t width, int32_t height, void *param)
     windows->changed = true;
 }
 
+/**
+ * Callback de mouvement du curseur.
+ * Met a jour les coordonnees de la souris dans la structure screen.
+ */
 void cursor(double xpos, double ypos, void *param)
 {
     screen *windows = (struct screen *)param;
@@ -38,11 +48,18 @@ void cursor(double xpos, double ypos, void *param)
     windows->y = ypos;
 }
 
+/**
+ * Callback des evenements clavier.
+ * 
+ * Touches gerees :
+ * - ESC : Ferme la fenetre
+ * - SPACE : Active/desactive le mode IA
+ */
 void keyhook(mlx_key_data_t keydata, void *param)
 {
-    both *data = (both *)param; // Assure-toi que le cast correspond à ta structure
-    screen *windows = data->windows;
-    game *gameData = data->gameData;
+    both *args = (struct both *)param;
+    screen *windows = args->windows;
+    game *gameData = args->gameData;
 
     if (keydata.key == MLX_KEY_ESCAPE && keydata.action == MLX_PRESS)
     {
@@ -61,18 +78,18 @@ void keyhook(mlx_key_data_t keydata, void *param)
             printf("IA Mode: %s\n", gameData->iaTurn ? "ON (Player 2)" : "OFF");
         #endif
     }
-
-    // Ajout de la touche H pour le Hint
-    if (keydata.key == MLX_KEY_H && keydata.action == MLX_PRESS)
-    {
-        printf("🔍 Touche H pressée !\n"); // <--- DEBUG
-        if (!data->gameData->game_over)
-            suggest_move(data->gameData, data->windows, data->gameData->turn);
-        else
-            printf("⚠️ Game Over, pas de hint.\n"); // <--- DEBUG
-    }
 }
 
+/**
+ * Callback des clics de souris.
+ * 
+ * Gere :
+ * 1. Clic sur le bouton RESTART (prioritaire)
+ * 2. Placement de pierres par le joueur humain
+ * 3. Validation des coups (regle du double-three)
+ * 
+ * Ignore les clics pendant le tour de l'IA ou hors du plateau.
+ */
 void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *param)
 {
     both *args = (struct both *)param;
@@ -168,7 +185,6 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
                 
                 // 4. Changer de tour
                 gameData->turn = (gameData->turn == P1) ? P2 : P1;
-                gameData->hint_idx = -1; // Effacer le hint après coup joué
                 windows->changed = true;
             }
         }

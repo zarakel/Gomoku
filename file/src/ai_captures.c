@@ -1,22 +1,21 @@
 #include "../include/gomoku.h"
 
-/*
- * ai_captures.c - Logique spécifique aux captures
+/**
+ * Module de gestion strategique des captures.
  * 
- * Responsabilité unique : Gérer la stratégie de captures
- * - Évaluer le danger des captures (pour les deux joueurs)
- * - Trouver les meilleurs coups de capture
- * - Trouver les blocages de capture urgents
+ * Fonctions principales :
+ * - Evaluation de la valeur defensive des captures
+ * - Recherche du meilleur coup de capture offensif
+ * - Calcul du niveau de danger des captures adverses
  */
 
-/* ============================================================================
- * ÉVALUATION DÉFENSIVE DES CAPTURES
- * Doit être définie AVANT find_best_capture_move qui l'utilise
- * ============================================================================ */
-
-/*
- * Évalue la valeur DÉFENSIVE d'une capture.
- * Retourne un bonus si la capture retire une pierre qui est dans plusieurs formations.
+/**
+ * Evalue la valeur defensive d'une capture.
+ * 
+ * Calcule un bonus si la capture retire une pierre adverse qui participe
+ * a plusieurs formations dangereuses (jonctions).
+ * 
+ * Retourne un score de bonus (0 si capture sans valeur defensive speciale).
  */
 int evaluate_defensive_capture_value(game *g, int capture_idx, int ia_player) {
     int opponent = (ia_player == P1) ? P2 : P1;
@@ -64,10 +63,19 @@ int evaluate_defensive_capture_value(game *g, int capture_idx, int ia_player) {
     return defensive_value;
 }
 
-/* ============================================================================
- * RECHERCHE DU MEILLEUR COUP DE CAPTURE
- * ============================================================================ */
-
+/**
+ * Recherche le meilleur coup de capture disponible.
+ * 
+ * Evalue tous les coups possibles qui capturent des paires adverses.
+ * Criteres d'evaluation :
+ * - Nombre de paires capturees
+ * - Victoire immediate par 5eme capture
+ * - Alignements crees simultanement
+ * - Captures en chaine possibles
+ * - Valeur defensive de la capture
+ * 
+ * Retourne l'index du meilleur coup, ou -1 si aucune capture possible.
+ */
 int find_best_capture_move(game *g, int player) {
     int best_move = -1;
     int best_score = -1;
@@ -127,14 +135,14 @@ int find_best_capture_move(game *g, int player) {
     return best_move;
 }
 
-/* ============================================================================
- * CALCUL DU NIVEAU DE DANGER DES CAPTURES ADVERSES
- * Retourne un score comparable aux scores d'alignement
- * ============================================================================ */
-
-/*
- * Calcule le niveau de danger des captures adverses
- * Retourne le score de danger ET stocke l'index du coup dangereux dans best_idx
+/**
+ * Calcule le niveau de danger des captures adverses.
+ * 
+ * Simule tous les coups adverses possibles et detecte les captures potentielles.
+ * Priorite maximale si l'adversaire peut gagner par capture (4 paires deja capturees).
+ * 
+ * Remplit best_idx avec l'index du coup de capture le plus dangereux.
+ * Retourne un score de danger comparable aux scores d'alignement.
  */
 int compute_capture_danger(game *g, int opponent, int *best_idx) {
     int opp_caps = g->captures[opponent];

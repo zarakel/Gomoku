@@ -1,5 +1,9 @@
 #include "../include/gomoku.h"
 
+/**
+ * Valide les arguments de ligne de commande.
+ * Pour l'instant, accepte uniquement le mode sans arguments.
+ */
 bool checkArgs(int argc, char **argv, void**args)
 {
     if (argc == 1)
@@ -12,6 +16,11 @@ bool checkArgs(int argc, char **argv, void**args)
     return true;
 }
 
+/**
+ * Initialise toutes les structures de donnees du jeu.
+ * Configure l'ecran, le plateau, les compteurs, et les timers.
+ * Doit etre appele avant le debut de la partie.
+ */
 bool initialized(void *args, screen *windows, game *gameData)
 {
     (void) args;
@@ -62,7 +71,6 @@ bool initialized(void *args, screen *windows, game *gameData)
     memset(gameData->max_threat_level, 0, sizeof(gameData->max_threat_level));
 
     gameData->current_hash = 0;
-    gameData->hint_idx = -1; // <--- INITIALISATION
 
     gameData->in_crisis = false;
     gameData->crisis_level = 0;
@@ -72,10 +80,12 @@ bool initialized(void *args, screen *windows, game *gameData)
     return true;
 }
 
-// Modifier la signature pour prendre game* au lieu de int*
-void putPiecesOnBoard(screen *windows, game *gameData)
+/**
+ * Affiche toutes les pieces presentes sur le plateau.
+ * Parcourt le tableau 1D et dessine chaque pierre visible.
+ */
+void putPiecesOnBoard(screen *windows, int *board)
 {
-    int *board = gameData->board;
     // On parcourt le tableau 1D comme une matrice pour l'affichage
     for (int y = 0; y < windows->board_size; y++)
     {
@@ -86,45 +96,41 @@ void putPiecesOnBoard(screen *windows, game *gameData)
             
             if (val == P1 || val == P2)
                 drawSquare(windows, x, y, val);
+            else if (val == PREVIS)
+                 drawSquare(windows, x, y, val); // Si tu as une couleur de prévis
         }
-    }
-
-    // DESSIN DU HINT (S'il est défini et que la case est vide)
-    if (gameData->hint_idx != -1 && board[gameData->hint_idx] == EMPTY)
-    {
-        drawSquare(windows, GET_X(gameData->hint_idx), GET_Y(gameData->hint_idx), 3);
     }
 }
 
-// Mettre à jour resetScreen pour passer gameData
-void resetScreen(screen *windows, game *gameData)
+void resetScreen(screen *windows, int *board)
 {
     printBlack(windows);
     putCadrillage(windows);
-    putPiecesOnBoard(windows, gameData);
+    putPiecesOnBoard(windows, board);
 }
 
+/**
+ * Boucle principale du jeu, appelee a chaque frame.
+ * Gere les mises a jour d'affichage, les tours de l'IA, et les conditions de victoire.
+ */
 void gameLoop(void *param)
 {
     both        *args = (struct both *)param;
     screen      *windows = args->windows;
     game        *gameData = args->gameData;
 
-    // Passer gameData au lieu de gameData->board
-    resetScreen(windows, gameData);
-    
     if (windows->changed)
     {
-        // if (windows->resized)
-        // {
-        windows->resized = false;
-        // }
+        if (windows->resized)
+        {
+            windows->resized = false;
+            resetScreen(windows, gameData->board);
+        }
 
         // Gestion du tour IA
         if (isIaTurn(gameData->iaTurn, gameData->turn) && !gameData->game_over)
         {
             makeIaMove(gameData, windows);
-            gameData->hint_idx = -1; // On efface le hint quand l'IA joue
             
             // Après le coup de l'IA, on change de tour et on redraw
             checkVictoryCondition(gameData);
@@ -144,6 +150,10 @@ void gameLoop(void *param)
     printInformation(windows, gameData);
 }
 
+/**
+ * Initialise la fenetre graphique MLX et lance la boucle de jeu.
+ * Configure tous les hooks (souris, clavier, resize) avant de demarrer.
+ */
 void launchGame(game *gameData, screen *windows)
 {
     both args;

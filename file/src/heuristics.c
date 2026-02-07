@@ -1,8 +1,14 @@
 #include "../include/gomoku.h"
 
-/*
- * Détecte les patterns gappés et retourne la case du trou
- * Scanne TOUTES les fenêtres de 5 cases possibles, pas seulement celles centrées sur une pierre
+/**
+ * Detecte les patterns gappes (4 pierres + 1 trou) dans une ligne.
+ * 
+ * Patterns recherches :
+ * - X_XXX : 4 pierres avec 1 trou au milieu
+ * - XX_XX, XXX_X, etc. : toutes les positions du trou
+ * 
+ * Retourne l'index du trou, ou -1 si aucun pattern trouve.
+ * Scanne toutes les fenetres de 5 cases possibles autour de (x,y).
  */
 static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
     int opponent = (player == P1) ? P2 : P1;
@@ -59,6 +65,17 @@ static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
     return -1;
 }
 
+/**
+ * Convertit un score numerique en niveau de menace categorique.
+ * 
+ * Niveaux :
+ * - IDX_WIN : Victoire immediate (5 alignes)
+ * - IDX_OPEN_FOUR : Menace imparable (4 alignes ouverts ou gapped four)
+ * - IDX_CLOSED_FOUR : Menace forte (4 alignes fermes)
+ * - IDX_OPEN_THREE : Menace serieuse (3 alignes ouverts)
+ * - IDX_CLOSED_THREE : Menace faible (3 alignes fermes)
+ * - IDX_OTHERS : Autres patterns
+ */
 int get_threat_level(int score) {
     if (score >= WIN_SCORE) return IDX_WIN;
     if (score >= OPEN_FOUR) return IDX_OPEN_FOUR; // Inclut les Gapped Fours gagnants
@@ -68,6 +85,16 @@ int get_threat_level(int score) {
     return IDX_OTHERS;
 }
 
+/**
+ * Recalcule completement les statistiques du plateau.
+ * 
+ * Reinitialise puis scanne toutes les pierres pour mettre a jour :
+ * - Scores positionnels incrementaux
+ * - Compteurs de menaces par niveau
+ * - Niveau de menace maximum par joueur
+ * 
+ * A appeler apres une modification majeure du plateau ou au debut d'un tour.
+ */
 void refresh_board_stats(game *g) {
     // 1. Reset complet des structures
     g->pos_score[1] = 0;
@@ -84,9 +111,13 @@ void refresh_board_stats(game *g) {
         update_impacted_scores(g, GET_X(i), GET_Y(i), false); // false = ADD
     }
 }
-/*
- * Trouve la case critique d'un gapped four pour un joueur
- * CORRIGÉ : Scanne depuis chaque pierre ET vérifie dans les deux directions
+/**
+ * Trouve la case critique d'un gapped four pour un joueur.
+ * 
+ * Un gapped four est un pattern X_XXX ou XXX_X qui devient victoire si le trou est comble.
+ * Scanne tout le plateau a la recherche de cases vides qui completent un tel pattern.
+ * 
+ * Retourne l'index de la case critique, ou -1 si aucun gapped four detecte.
  */
 int find_gapped_four_hole(game *g, int player) {
     int dx[] = {1, 0, 1, 1};
@@ -404,6 +435,7 @@ static int evaluate_full_line(game *g, int x, int y, int dx, int dy, int player)
 int get_point_score(game *g, int x, int y, int player) {
     int total = 0;
     int max_line = 0;
+    int opponent = (player == P1) ? P2 : P1;
     
     // 1. Évaluation directionnelle classique
     int d_scores[4];
@@ -418,11 +450,134 @@ int get_point_score(game *g, int x, int y, int player) {
         if (d_scores[i] > max_line) max_line = d_scores[i];
     }
 
-    // 2. AJOUT : Bonus de Fourchette (Intersection)
-    // On ne donne le bonus que si on ne gagne pas déjà (max_line < WIN_SCORE)
+    // 2. BONUS DE FOURCHETTE (Intersection)
     total += compute_fork_bonus(g, x, y, player);
 
+    // 3. AMÉLIORATION PHASE 5 : Rendre l'évaluation TRÈS AGRESSIVE
+    // Multiplier les menaces offensives par 1.5 pour favoriser l'attaque
+    if (max_line >= OPEN_THREE) {
+        total = (int)(total * 1.5); // Augmenté de 1.25 à 1.5
+    } else if (max_line >= CLOSED_THREE) {
+        total = (int)(total * 1.3); // Bonus même pour menaces moyennes
+    }
+
+    // 4. NOUVEAU : BONUS SETUP FOURCHETTES (Préparation)
+    // Détecter les coups qui préparent une fourchette au prochain tour
+    int setup_bonus = 0;
+    int potential_threats = 0;
+    
+    // Simuler le coup
+    g->board[GET_INDEX(x, y)] = player;
+    
+    // Chercher les cases adjacentes qui créeraient une fourchette après ce coup
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx, ny = y + dy;
+            if (!IS_VALID(nx, ny) || g->board[GET_INDEX(nx, ny)] != EMPTY) continue;
+            
+            // Simuler ce deuxième coup
+            g->board[GET_INDEX(nx, ny)] = player;
+            int threats = count_created_threats(g, GET_INDEX(nx, ny), player);
+            g->board[GET_INDEX(nx, ny)] = EMPTY;
+            
+            if (threats >= 2) {
+                potential_threats++;
+            }
+        }
+    }
+    
+    g->board[GET_INDEX(x, y)] = EMPTY;
+    
+    if (potential_threats >= 2) {
+        setup_bonus = 500000; // GROS bonus pour setup fourchette
+    } else if (potential_threats == 1) {
+        setup_bonus = 200000; // Bonus moyen
+    }
+    total += setup_bonus;
+
+    // 5. BONUS D'INITIATIVE (cases centrales en début de partie)
+    int stone_count = 0;
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (g->board[i] != EMPTY) stone_count++;
+    }
+    
+    if (stone_count < 20) { // Début de partie
+        int center_dist = abs(x - 9) + abs(y - 9);
+        if (center_dist <= 4) {
+            total += (5 - center_dist) * 200; // Bonus jusqu'à 1000
+        }
+    }
+
+    // 6. BONUS PROSPECTIF : Détecter les menaces latentes (simplifié)
+    // Un coup qui prépare de futures menaces (pierres espacées mais alignables)
+    int latent_threats = 0;
+    int dx[4] = {1, 0, 1, 1};
+    int dy[4] = {0, 1, 1, -1};
+    
+    for (int d = 0; d < 4; d++) {
+        // Compter les pierres alliées dans un rayon de 2-3 cases (réduit pour perf)
+        int stones_in_range = 0;
+        for (int k = -3; k <= 3; k++) {
+            if (k == 0) continue;
+            int nx = x + dx[d] * k;
+            int ny = y + dy[d] * k;
+            if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] == player) {
+                stones_in_range++;
+            }
+        }
+        if (stones_in_range >= 2) latent_threats++;
+    }
+    
+    if (latent_threats >= 2) {
+        total += latent_threats * 400; // Augmenté de 300 à 400
+    }
+
     return total;
+}
+
+/*
+ * NOUVEAU : Évaluation ULTRA-LÉGÈRE pour le VCF
+ * Compte simplement les pierres alignées sans calculs lourds
+ */
+int get_point_score_fast(game *g, int x, int y, int player) {
+    int dx[4] = {1, 0, 1, 1};
+    int dy[4] = {0, 1, 1, -1};
+    int max_score = 0;
+    
+    for (int d = 0; d < 4; d++) {
+        int stones = 1; // La pierre qu'on pose
+        int open_ends = 0;
+        
+        // Compter vers le positif
+        for (int k = 1; k <= 4; k++) {
+            int nx = x + dx[d] * k, ny = y + dy[d] * k;
+            if (!IS_VALID(nx, ny)) break;
+            if (g->board[GET_INDEX(nx, ny)] == player) stones++;
+            else if (g->board[GET_INDEX(nx, ny)] == EMPTY) { open_ends++; break; }
+            else break;
+        }
+        
+        // Compter vers le négatif
+        for (int k = 1; k <= 4; k++) {
+            int nx = x - dx[d] * k, ny = y - dy[d] * k;
+            if (!IS_VALID(nx, ny)) break;
+            if (g->board[GET_INDEX(nx, ny)] == player) stones++;
+            else if (g->board[GET_INDEX(nx, ny)] == EMPTY) { open_ends++; break; }
+            else break;
+        }
+        
+        // Scoring rapide
+        int score = 0;
+        if (stones >= 5) score = WIN_SCORE;
+        else if (stones == 4) score = (open_ends == 2) ? OPEN_FOUR : CLOSED_FOUR;
+        else if (stones == 3) score = (open_ends == 2) ? OPEN_THREE : CLOSED_THREE;
+        else if (stones == 2) score = (open_ends == 2) ? OPEN_TWO : CLOSED_TWO;
+        
+        if (score > max_score) max_score = score;
+    }
+    
+    return max_score;
 }
 
 // Helper pour recalculer les scores globaux ET repérer la menace maximale unique
@@ -577,41 +732,61 @@ int count_overlapping_threats(game *g, int player) {
  */
 int evaluate_board(game *g, int player) {
     int opponent = (player == P1) ? P2 : P1;
-
-    // 1. Victoires Absolues (Alignements ou 10 captures)
-    if (g->max_threat_level[player] == IDX_WIN) return WIN_SCORE;
-    if (g->max_threat_level[opponent] == IDX_WIN) return -WIN_SCORE;
+    
+    // PHASE 5 : OFFENSIVE MAXIMALE AVEC DÉFENSE INTELLIGENTE
+    long long my_score = g->pos_score[player];
+    long long opp_score = g->pos_score[opponent];
+    
+    // Bonus captures
+    my_score += g->captures[player] * CAPTURE_BONUS;
+    opp_score += g->captures[opponent] * CAPTURE_BONUS;
+    
+    // Victoire par capture
     if (g->captures[player] >= 5) return WIN_SCORE;
     if (g->captures[opponent] >= 5) return -WIN_SCORE;
-
-    // 2. Score de base basé sur les alignements
-    long long final_score = g->pos_score[player] - (long long)(g->pos_score[opponent] * 1.5);
-
-    // 3. Gestion dynamique des captures
-    // Plus l'adversaire approche des 5 paires, plus chaque capture adverse est pénalisée lourdement
-    int opp_caps = g->captures[opponent];
-    int my_caps = g->captures[player];
-
-    // Bonus pour mes captures
-    if (my_caps == 4) final_score += 1000000; // Un cran avant la victoire
-    final_score += (my_caps * CAPTURE_BONUS);
-
-    // Malus exponentiel pour les captures adverses
-    if (opp_caps == 3) final_score -= 500000;
-    if (opp_caps == 4) final_score -= 5000000; // Alerte rouge : une seule capture et je perds
-
-    // 4. Protection contre le "Bait" (l'appât)
-    // Si j'ai des paires vulnérables, je réduis mon score car ma position est fragile
-    int my_vulnerable = count_vulnerable_pairs(g, player);
-    if (my_vulnerable > 0) {
-        final_score -= (my_vulnerable * (opp_caps + 1) * 100000);
+    
+    // Compter les pierres pour détecter l'ouverture
+    int stone_count = 0;
+    for (int i = 0; i < MAX_BOARD; i++)
+        if (g->board[i] != EMPTY) stone_count++;
+    
+    // STRATÉGIE ADAPTATIVE:
+    // - Ouverture: Ultra-agressif (construire avantage)
+    // - Mid-game: Agressif mais défense sur menaces critiques
+    
+    if (stone_count < 15) {
+        // OUVERTURE: Priorité absolue à l'offensive
+        my_score = (long long)(my_score * 5.0);
+        opp_score = (long long)(opp_score * 0.5);
+    } else {
+        // MID-GAME: Défense adaptative selon niveau de menace
+        
+        // Offensive: toujours boostée
+        my_score = (long long)(my_score * 4.0);
+        
+        // Défense: Dépend du danger adverse
+        double def_multiplier = 0.6; // Défaut: basse priorité
+        
+        // EXCEPTION CRITIQUE: Menaces mortelles DOIVENT être bloquées
+        // Si adversaire a OPEN_FOUR ou WIN_SCORE, défense = priorité absolue
+        if (g->max_threat_level[opponent] >= IDX_OPEN_FOUR) {
+            def_multiplier = 3.0; // Défense > Offensive pour survie
+        } else if (g->max_threat_level[opponent] >= IDX_CLOSED_FOUR) {
+            def_multiplier = 1.5; // Menace sérieuse, attention requise
+        } else if (g->max_threat_level[opponent] >= IDX_OPEN_THREE) {
+            def_multiplier = 0.8; // Légère attention
+        }
+        
+        opp_score = (long long)(opp_score * def_multiplier);
     }
-
-    // Clamping final
-    if (final_score >= WIN_SCORE) final_score = WIN_SCORE - 1000;
-    if (final_score <= -WIN_SCORE) final_score = -WIN_SCORE + 1000;
-
-    return (int)final_score;
+    
+    long long total = my_score - opp_score;
+    
+    // Sécurité overflow
+    if (total > INT_MAX) return INT_MAX;
+    if (total < INT_MIN) return INT_MIN;
+    
+    return (int)total;
 }
 
 /* 
