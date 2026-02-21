@@ -110,6 +110,7 @@ void update_crisis_state(game *g, int ia_player) {
     int opponent = (ia_player == P1) ? P2 : P1;
     
     g->in_crisis = false;
+    g->crisis_immediate_win = false;
     g->crisis_level = 0;
     g->crisis_move_count = 0;
     
@@ -127,6 +128,7 @@ void update_crisis_state(game *g, int ia_player) {
     
     if (winning_moves > 0) {
         g->in_crisis = true;
+        g->crisis_immediate_win = true; // L'adversaire gagne en 1 coup → VCF offensif interdit
         g->crisis_move_count = winning_moves;
         g->crisis_level = (winning_moves == 1) ? 2 : 3; // 3 = Mort quasi certaine (double menace)
         #ifdef DEBUG

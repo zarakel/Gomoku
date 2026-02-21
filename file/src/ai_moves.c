@@ -71,24 +71,24 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     // Un coup qui crée un Four ou plusieurs Threes
     if (atk_score >= OPEN_FOUR) return SORT_THREAT_MAX + 5000000; // Boost massif
     
-    // Niveau 2.5 : DOUBLE-FORK OFFENSIF (PRIORITÉ ABSOLUE)
-    int fork_value = compute_fork_value(g, idx, player);
-    if (fork_value > 0) {
-        return fork_value + 2000000; // Boost fourchettes
-    }
-    
-    // OPEN_THREE offensif = PRIORITÉ sur OPEN_FOUR défensif
-    if (atk_score >= OPEN_THREE) return SORT_THREAT_MAX;
-
-    // Niveau 2.7 : BLOCAGE DE FOURCHETTE ADVERSE
-    // Si l'adversaire jouerait ici pour créer une fourchette (2+ menaces simultanées),
-    // on doit occuper cette case avant lui.
-    // Priorité juste sous OPEN_THREE offensif : on préfère gagner, mais on bloque
-    // une fourchette avant toute autre défense.
+    // Niveau 2.5a : BLOCAGE FOURCHETTE ADVERSE (avant tout OPEN_THREE)
+    // Si P1 peut jouer ici pour créer 2 menaces simultanées (open+closed three),
+    // bloquer MAINTENANT est plus urgent que créer notre propre open_three.
+    // Raison : si P1 forke, la malus 4b (-10M) est pire que perdre 1 tour offensif.
     int opp_fork_value = compute_fork_value(g, idx, opponent);
     if (opp_fork_value > 0) {
-        return SORT_THREAT_MAX - 500000;
+        return SORT_THREAT_MAX + 1000000; // Au-dessus de notre propre OPEN_THREE
     }
+
+    // Niveau 2.5b : DOUBLE-FORK OFFENSIF
+    // Priorité augmentée au-dessus de OPEN_THREE simple.
+    int fork_value = compute_fork_value(g, idx, player);
+    if (fork_value > 0) {
+        return SORT_THREAT_MAX + 3000000; // Au-dessus de OPEN_THREE et blocage fourche
+    }
+    
+    // OPEN_THREE offensif
+    if (atk_score >= OPEN_THREE) return SORT_THREAT_MAX;
 
     // Niveau 3 : Défense SECONDARY (après avoir testé offensive)
     if (def_score >= OPEN_FOUR) return SORT_BLOCK_WIN - 1000000; // Réduit priorité
@@ -132,6 +132,29 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
 
     // Bonus de centralité et heuristiques de recherche
     final_score += (20 - (abs(x - 9) + abs(y - 9))) * 100;
+
+    // BONUS DE CONNEXION : favoriser les coups près de pierres amies existantes.
+    // Actif uniquement quand les scores sont faibles (ouverture / milieu sans menace critique).
+    // En fin de partie ou sur menace sérieuse (>= OPEN_THREE), la connexion n'a plus besoin
+    // d'être boostée : pos_score et atk_score dominent largement.
+    // Cela corrige la dispersion : l'IA construisait des structures éparpillées car
+    // OPEN_TWO=1000 < bonus centralité=1900, donc stones isolés bien centrés > stones connectés.
+    if (final_score < OPEN_THREE) {
+        int connection_bonus = 0;
+        for (int dy2 = -2; dy2 <= 2; dy2++) {
+            for (int dx2 = -2; dx2 <= 2; dx2++) {
+                if (dx2 == 0 && dy2 == 0) continue;
+                int nx = x + dx2, ny = y + dy2;
+                if (!IS_VALID(nx, ny)) continue;
+                if (g->board[GET_INDEX(nx, ny)] == player) {
+                    int cheb = (abs(dx2) > abs(dy2)) ? abs(dx2) : abs(dy2);
+                    connection_bonus += (cheb == 1) ? 3000 : 1000;
+                }
+            }
+        }
+        final_score += connection_bonus;
+    }
+
     if (depth >= 0 && depth < MAX_DEPTH) {
         if (idx == killer_moves[depth][0]) final_score += SORT_KILLER_1;
     }
@@ -233,11 +256,14 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     } else if (stone_count < 15) {
         max_to_keep = 35; // Début de partie : plus de coups
     } else if (stone_count < 40) {
-        // Mid-game : 30 coups pour ne pas couper les moves de construction adverse
-        // (score CLOSED_THREE ~50k) qui tombaient à l'index 20-25 avec l'ancien beam.
-        max_to_keep = 30;
+        // Mid-game : 25 coups. Réduit de 30→25 pour que depth=4+ complète en temps.
+        // Les coups aux indices 26-29 sont des menaces faibles (< CLOSED_THREE)
+        // bien en dessous des menaces critiques toujours dans le top 20.
+        max_to_keep = 25;
     } else {
-        max_to_keep = 30; // End-game : plus d'options
+        // End-game : plateau dense, les top 22 coups suffisent.
+        // Réduit de 30→22 pour permettre depth=6+ dans les positions chargées.
+        max_to_keep = 22;
     }
     
     return (count > max_to_keep) ? max_to_keep : count;

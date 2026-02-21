@@ -78,8 +78,8 @@
 #define CLOSED_FOUR     5000000   
 #define OPEN_THREE      2000000   
 #define CLOSED_THREE    50000
-#define OPEN_TWO        1000
-#define CLOSED_TWO      100
+#define OPEN_TWO        4000  // 2 pierres alignées, les 2 bouts ouverts (was 1000 : trop faible vs centralité)
+#define CLOSED_TWO      300   // 2 pierres alignées, 1 bout ouvert (was 100)
 
 // Seuils pour les menaces
 #define THREAT_THRESHOLD 500000
@@ -158,6 +158,7 @@ typedef struct game {
     int     threat_counts[3][THREAT_LEVELS]; 
     int     max_threat_level[3];
     bool    in_crisis;
+    bool    crisis_immediate_win; // true si l'adversaire peut gagner EN 1 COUP (≠ open four)
     int     crisis_level;
     int     crisis_move_count;
     int     crisis_moves[10];

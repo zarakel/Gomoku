@@ -732,6 +732,17 @@ int evaluate_board(game *g, int player) {
     if (opp_closed_fours >= 2) return -(WIN_SCORE - 2001);
     if (my_closed_fours  >= 2) return  (WIN_SCORE - 2001);
 
+    // 3c. QUASI-TERMINAUX : 4 captures adverses
+    // 4 paires capturées = l'adversaire gagne dès qu'il capture 1 paire de plus.
+    // Toute case exposée en fourchette devient un coup gagnant immédiat par capture.
+    // CAPTURE_BONUS linéaire (50K/paire) est insuffisant : 4×50K=200K est invisible
+    // face aux menaces d'alignement (OPEN_THREE=2M). Ce quasi-terminal corrige ça.
+    // Hiérarchie : open_fours≥2 > closed_fours≥2 > caps≥4 > caps≥3
+    int opp_caps = g->captures[opponent];
+    int my_caps  = g->captures[player];
+    if (opp_caps >= 4) return -(WIN_SCORE - 3001);
+    if (my_caps  >= 4) return  (WIN_SCORE - 3001);
+
     // 4. ÉVALUATION SYMÉTRIQUE
     // pos_score accumule tous les scores de ligne ; on ajoute le bonus capture.
     long long my_score  = g->pos_score[player]   + (long long)g->captures[player]   * CAPTURE_BONUS;
@@ -766,14 +777,17 @@ int evaluate_board(game *g, int player) {
     }
 
     // 4d. MALUS DOUBLE-EXTENSION LATENTE (2+ Closed Threes en directions distinctes)
-    // 2 closed_threes sans open_three ni closed_four = structure "open two" positionnée
-    // en fourchette. L'adversaire peut créer 2 open_fours simultanés en 1 coup sans
-    // passer par les seuils de Fix C (open_three+closed_four) — invisible jusqu'à la crise.
-    // Malus proportionnel à OPEN_THREE pour forcer le blocage préventif.
     int opp_closed_threes = g->threat_counts[opponent][IDX_CLOSED_THREE];
     int my_closed_threes  = g->threat_counts[player][IDX_CLOSED_THREE];
     if (opp_closed_threes >= 2) total -= (long long)(opp_closed_threes - 1) * OPEN_THREE;
     if (my_closed_threes  >= 2) total += (long long)(my_closed_threes  - 1) * OPEN_THREE;
+
+    // 4e. MALUS CAPTURES AVANCÉES (3 paires)
+    // 4 captures = quasi-terminal (retour anticipé section 3c).
+    // 3 captures = 2 paires de plus suffisent à gagner. Signal fort équivalent
+    // à un OPEN_FOUR supplémentaire pour que minimax évite de laisser capturer.
+    if (opp_caps >= 3) total -= OPEN_FOUR;
+    if (my_caps  >= 3) total += OPEN_FOUR;
 
     // 4. PLAFONNEMENT STRICT
     // Empêche une position non-terminale (ex: 2 open fours = 20M pts)

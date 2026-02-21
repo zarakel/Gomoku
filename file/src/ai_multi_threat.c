@@ -25,25 +25,29 @@ int count_created_threats(game *g, int idx, int player) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
     
-    int threats_count = 0;
+    int open_threats = 0;
+    int mixed_threats = 0;
     
     g->board[idx] = player;
     
     for (int d = 0; d < 4; d++) {
         int score = evaluate_line(g, x, y, dx[d], dy[d], player);
-        if (score >= OPEN_THREE) {
-            threats_count++;
-        }
+        if (score >= OPEN_THREE) open_threats++;
+        else if (score >= CLOSED_THREE) mixed_threats++;
     }
     
     g->board[idx] = EMPTY;
 
-    // Si on crée plusieurs menaces, on vérifie si c'est un Double Three légal ou non
-    if (threats_count >= 2) {
+    // Fourchette OUVERTE : 2+ open_threes  (imparable sauf blocage immédiat)
+    // Fourchette MIXTE  : 1 open_three + 1 closed_three  (dangereux ca 2 coups)
+    // Pur closed×2 ignoré ici : défendable en 1 coup (bloquer l'open_end).
+    int total_threats = open_threats + mixed_threats;
+    if (total_threats < 2 || open_threats < 1) return 0;
+
+    if (total_threats >= 2) {
         if (is_double_three(g, idx, player)) return 0;
     }
-    
-    return threats_count;
+    return total_threats;
 }
 
 /**

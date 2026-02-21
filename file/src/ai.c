@@ -202,7 +202,13 @@ void makeIaMove(game *gameData, screen *windows) {
     // Priorite 1 : VCF (sequences de menaces forcees menant a la victoire)
     // Priorite 2 : Minimax avec approfondissement iteratif (evaluation complete)
     if (!forcing_found) {
-        int vcf_move = find_winning_vcf(gameData, ia_player);
+        // VCF est purement offensif : il ne voit pas les victoires adverses.
+        // Si l'adversaire peut gagner EN 1 COUP (crisis_immediate_win), lancer VCF
+        // serait suicidaire : on trouve un gain offensif pendant que l'adversaire gagne.
+        // Minimax trouve le blocage trivialement à depth=2 (SORT_BLOCK_WIN+10M = idx 0).
+        // Note: threat_counts[IDX_WIN] = 5-en-ligne existant = toujours 0 en partie live.
+        // Le vrai signal est crisis_immediate_win, posé par update_crisis_state.
+        int vcf_move = !gameData->crisis_immediate_win ? find_winning_vcf(gameData, ia_player) : -1;
         if (vcf_move != -1 && !is_double_three(gameData, vcf_move, ia_player)) {
             best_move = vcf_move; reason = "VCF Gagnant";
         } else {

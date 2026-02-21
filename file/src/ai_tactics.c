@@ -16,7 +16,7 @@
  */
 
 #define VCF_MAX_DEPTH 30
-#define VCF_TIME_LIMIT 0.045 // 45ms max pour le VCF : laisse ~355ms a minimax
+#define VCF_TIME_LIMIT 0.030 // 30ms max pour le VCF : laisse ~370ms a minimax
 
 // Cache global pour eviter de recalculer les memes positions
 static int vcf_cache[MAX_BOARD];      // -1 = non teste, 0 = echec, 1 = succes

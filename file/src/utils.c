@@ -26,6 +26,7 @@ void resetGame(game *gameData, screen *windows)
     
     // ===== NOUVEAU : Reset Crisis State =====
     gameData->in_crisis = false;
+    gameData->crisis_immediate_win = false;
     gameData->crisis_level = 0;
     gameData->crisis_move_count = 0;
     memset(gameData->crisis_moves, -1, sizeof(gameData->crisis_moves));
