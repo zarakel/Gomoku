@@ -32,6 +32,7 @@ void resetGame(game *gameData, screen *windows)
     // =========================================
 
     memset(transposition_table, 0, sizeof(transposition_table));
+    gameData->current_hash = 0; // Reset hash Zobrist : la nouvelle partie repart d'un état propre.
 
     resetTimer(&gameData->ia_timer);
     clear_heuristics();

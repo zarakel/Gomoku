@@ -41,16 +41,14 @@ static bool would_capture_us(game *g, int idx, int player) {
  * 
  * Strategie : Privilegie l'offensive (x3.0) sur la defense (x0.5).
  */
-static int score_move_ordering(game *g, int idx, int player, int tt_move, int depth) {
+static int score_move_ordering(game *g, int idx, int player, int tt_move, int depth, int pre_my_caps) {
     if (idx == tt_move) return SORT_HASH;
 
     int opponent = (player == P1) ? P2 : P1;
     int x = GET_X(idx), y = GET_Y(idx);
     
-    // Analyse des captures offensives et defensives
-    // my_caps : pierres que nous pouvons capturer en jouant ici
-    // enemy_can_cap : risque que l'adversaire nous capture si on joue ici
-    int my_caps = count_potential_captures(g, x, y, player);
+    // my_caps pré-calculé par generate_moves pour éviter le double appel.
+    int my_caps = pre_my_caps;
     bool enemy_can_cap = would_capture_us(g, idx, player);
     
     // Evaluation des menaces de lignes creees par ce coup
@@ -81,7 +79,17 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     
     // OPEN_THREE offensif = PRIORITÉ sur OPEN_FOUR défensif
     if (atk_score >= OPEN_THREE) return SORT_THREAT_MAX;
-    
+
+    // Niveau 2.7 : BLOCAGE DE FOURCHETTE ADVERSE
+    // Si l'adversaire jouerait ici pour créer une fourchette (2+ menaces simultanées),
+    // on doit occuper cette case avant lui.
+    // Priorité juste sous OPEN_THREE offensif : on préfère gagner, mais on bloque
+    // une fourchette avant toute autre défense.
+    int opp_fork_value = compute_fork_value(g, idx, opponent);
+    if (opp_fork_value > 0) {
+        return SORT_THREAT_MAX - 500000;
+    }
+
     // Niveau 3 : Défense SECONDARY (après avoir testé offensive)
     if (def_score >= OPEN_FOUR) return SORT_BLOCK_WIN - 1000000; // Réduit priorité
     
@@ -111,15 +119,11 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     }
 
     // Calcul du score final pour le tri
-    // OFFENSIVE x3, DÉFENSE x0.5
+    // OFFENSIVE x3, DÉFENSE x1.2 (pas de malus sur la défense pure :
+    // en crise, bloquer sans contre-attaque est le seul coup utile)
     double att_weight = 3.0;
-    double def_weight = 0.5;
+    double def_weight = 1.2;
     int final_score = (int)(atk_score * att_weight) + (int)(def_score * def_weight) + capture_priority + defense_priority;
-
-    // MALUS SÉVÈRE pour coups purement défensifs
-    if (atk_score < OPEN_THREE && def_score > 0) {
-        final_score = (int)(final_score * 0.3); // -70% pour défense sans attaque!
-    }
     
     // BONUS pour coups offensifs (même faibles)
     if (atk_score >= CLOSED_THREE) {
@@ -151,10 +155,12 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     int count = 0;
     int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
     bool empty = true;
-    
+    int stone_count = 0;
+
     for (int i = 0; i < MAX_BOARD; i++) {
         if (g->board[i] != EMPTY) {
             empty = false;
+            stone_count++;
             int cx = GET_X(i), cy = GET_Y(i);
             if (cx < min_x) min_x = cx; if (cx > max_x) max_x = cx;
             if (cy < min_y) min_y = cy; if (cy > max_y) max_y = cy;
@@ -191,9 +197,19 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
             }
             if (!interesting) continue;
 
+            // Règle double-three (Renju) : seul P1 (Noir) est soumis à cette restriction.
+            // Filtrer ici garantit que negamax ne simule pas de coups illégaux pour P1,
+            // évitant des évaluations erronées (l'IA pensait à tort que l'humain peut jouer
+            // des double-three → positions adverses surévaluées).
+            if (player == P1 && is_double_three(g, idx, player)) continue;
+
+            // Calcul unique des captures : évite 2 appels séparés
+            // (1 dans score_move_ordering + 1 pour is_capture).
+            int pre_my_caps = count_potential_captures(g, x, y, player);
             moves[count].index = idx;
-            moves[count].score_estim = score_move_ordering(g, idx, player, tt_best_move, depth);
-            
+            moves[count].is_capture = (pre_my_caps > 0);
+            moves[count].score_estim = score_move_ordering(g, idx, player, tt_best_move, depth, pre_my_caps);
+
             // REJET des coups TROP vulnérables (score négatif)
             if (moves[count].score_estim < -1000000) {
                 continue; // Skip ce coup dangereux
@@ -207,18 +223,19 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     qsort(moves, count, sizeof(MoveCandidate), compare_moves);
 
     // Élagage (Beam Search) : adaptatif selon situation
-    int stone_count = 0;
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) stone_count++;
-    }
-    
+    // stone_count déjà calculé dans la boucle bbox ci-dessus (Fix E).
     int max_to_keep;
     if (g->in_crisis) {
-        max_to_keep = 60; // Crise : explorer largement
+        // Crise : réduire le beam pour que minimax explore chaque option défensive
+        // plus profondément. Avec 60 coups, la profondeur effective est divisée par 12.
+        // Avec 12, on concentre la recherche sur les seuls coups qui comptent.
+        max_to_keep = 12;
     } else if (stone_count < 15) {
         max_to_keep = 35; // Début de partie : plus de coups
     } else if (stone_count < 40) {
-        max_to_keep = 20; // Mid-game : focus sur les meilleurs
+        // Mid-game : 30 coups pour ne pas couper les moves de construction adverse
+        // (score CLOSED_THREE ~50k) qui tombaient à l'index 20-25 avec l'ancien beam.
+        max_to_keep = 30;
     } else {
         max_to_keep = 30; // End-game : plus d'options
     }

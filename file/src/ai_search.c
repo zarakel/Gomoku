@@ -18,7 +18,9 @@ static inline bool is_timeout(clock_t start_time) {
  * Retourne le score de la position, ou TIMEOUT_CODE si le temps est ecoule.
  */
 static int quiescence_search(game *g, int alpha, int beta, int player, int qs_depth, clock_t start_time) {
-    if ((debug_node_count & 127) == 0 && is_timeout(start_time)) return TIMEOUT_CODE;
+    // Granularité 63 (au lieu de 127) : réduit la fenêtre max entre deux checks
+    // de ~8ms à ~4ms, évite les dépassements de budget sur des nœuds lourds.
+    if ((debug_node_count & 63) == 0 && is_timeout(start_time)) return TIMEOUT_CODE;
 
     // Stand Pat : evaluation statique de la position actuelle
     // Si cette evaluation est deja suffisante (cutoff beta), on peut arreter
@@ -82,7 +84,10 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     debug_node_count++;
 
     // Verification du timeout (tous les 256 noeuds pour limiter l'overhead)
-    if ((debug_node_count & 255) == 0 && is_timeout(start_time)) return TIMEOUT_CODE;
+    // Granularité 63 : même raison que dans quiescence_search.
+    // Avec beam=30, un seul niveau peut générer 900 nœuds sans check intermédiaire
+    // si on utilise 255 → risque de dépasser 1.7s comme observé dans les logs.
+    if ((debug_node_count & 63) == 0 && is_timeout(start_time)) return TIMEOUT_CODE;
 
     // Consultation de la table de transposition
     // Si cette position a deja ete evaluee a une profondeur suffisante, reutiliser le resultat
@@ -135,10 +140,19 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
         // PVS Logic
         if (i == 0) {
             val = -negamax(g, depth - 1, -beta, -alpha, opponent, start_time);
+            // -TIMEOUT_CODE = +99999999 : intercepter la négation du code timeout
+            if (val == TIMEOUT_CODE || val == -TIMEOUT_CODE) {
+                undo_move(g, player, &undo);
+                return TIMEOUT_CODE;
+            }
         } else {
             // LMR
+            // Seuil abaissé à CLOSED_THREE : les coups de setup adverses
+            // (score entre CLOSED_THREE et OPEN_THREE) ne sont plus réduits.
+            // Avant, l'adversaire pouvait construire une fourche via des coups "silencieux"
+            // qui passaient sous le radar du LMR et n'étaient pas explorés assez profondément.
             int R = 0;
-            if (depth >= 4 && i >= 6 && moves[i].score_estim < OPEN_THREE) R = 1;
+            if (depth >= 4 && i >= 6 && moves[i].score_estim < CLOSED_THREE) R = 1;
             
             val = -negamax(g, depth - 1 - R, -alpha - 1, -alpha, opponent, start_time);
             
@@ -156,13 +170,17 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
             }
             if (val > alpha && val < beta) {
                 val = -negamax(g, depth - 1, -beta, -alpha, opponent, start_time);
+                if (val == TIMEOUT_CODE || val == -TIMEOUT_CODE) {
+                    undo_move(g, player, &undo);
+                    return TIMEOUT_CODE;
+                }
             }
         }
         
         undo_move(g, player, &undo);
 
-        // Propagation Timeout
-        if (val == TIMEOUT_CODE) return TIMEOUT_CODE;
+        // Propagation Timeout (inclut -TIMEOUT_CODE issu de la négation)
+        if (val == TIMEOUT_CODE || val == -TIMEOUT_CODE) return TIMEOUT_CODE;
 
         if (val > best_val) {
             best_val = val;

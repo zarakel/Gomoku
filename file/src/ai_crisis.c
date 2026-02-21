@@ -327,6 +327,10 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
     
     for (int i = 0; i < cand_count; i++) {
         int idx = candidates[i].idx;
+
+        // Refuser les coups illégaux (double-three) avant même d'essayer
+        if (is_double_three(g, idx, ia_player)) continue;
+
         bool is_safe = true;
         
         MoveUndo undo;
@@ -347,25 +351,6 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
             }
         }
         
-        // CHECK 2 : (Si on n'est pas déjà mort) Est-ce qu'on lui laisse un Open 4 imparable ?
-        // Si on bloque un 4, mais qu'il en a un autre ailleurs, on a perdu quand même.
-        if (is_safe && g->crisis_level >= 2) {
-            int open_four_remaining = 0;
-             for (int k = 0; k < MAX_BOARD; k++) {
-                 if (g->board[k] == EMPTY) {
-                     g->board[k] = opponent;
-                     if (get_point_score(g, GET_X(k), GET_Y(k), opponent) >= OPEN_FOUR) {
-                         open_four_remaining++;
-                     }
-                     g->board[k] = EMPTY;
-                     if (open_four_remaining > 0) break;
-                 }
-             }
-             if (open_four_remaining > 0) {
-                 is_safe = false; // Ce coup ne nous sauve pas complètement
-             }
-        }
-
         undo_move(g, ia_player, &undo);
         
         if (is_safe) {

@@ -461,55 +461,12 @@ int get_point_score(game *g, int x, int y, int player) {
         total = (int)(total * 1.3); // Bonus même pour menaces moyennes
     }
 
-    // 4. NOUVEAU : BONUS SETUP FOURCHETTES (Préparation)
-    // Détecter les coups qui préparent une fourchette au prochain tour
-    int setup_bonus = 0;
-    int potential_threats = 0;
-    
-    // Simuler le coup
-    g->board[GET_INDEX(x, y)] = player;
-    
-    // Chercher les cases adjacentes qui créeraient une fourchette après ce coup
-    for (int dy = -2; dy <= 2; dy++) {
-        for (int dx = -2; dx <= 2; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            int nx = x + dx, ny = y + dy;
-            if (!IS_VALID(nx, ny) || g->board[GET_INDEX(nx, ny)] != EMPTY) continue;
-            
-            // Simuler ce deuxième coup
-            g->board[GET_INDEX(nx, ny)] = player;
-            int threats = count_created_threats(g, GET_INDEX(nx, ny), player);
-            g->board[GET_INDEX(nx, ny)] = EMPTY;
-            
-            if (threats >= 2) {
-                potential_threats++;
-            }
-        }
-    }
-    
-    g->board[GET_INDEX(x, y)] = EMPTY;
-    
-    if (potential_threats >= 2) {
-        setup_bonus = 500000; // GROS bonus pour setup fourchette
-    } else if (potential_threats == 1) {
-        setup_bonus = 200000; // Bonus moyen
-    }
-    total += setup_bonus;
-
-    // 5. BONUS D'INITIATIVE (cases centrales en début de partie)
-    int stone_count = 0;
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) stone_count++;
-    }
-    
-    if (stone_count < 20) { // Début de partie
-        int center_dist = abs(x - 9) + abs(y - 9);
-        if (center_dist <= 4) {
-            total += (5 - center_dist) * 200; // Bonus jusqu'à 1000
-        }
-    }
-
-    // 6. BONUS PROSPECTIF : Détecter les menaces latentes (simplifié)
+    // 4. BONUS PROSPECTIF : Détecter les menaces latentes (simplifié)
+    // NOTE: Le bonus "setup fourchette" (simulation imbriquée 5×5 × count_created_threats)
+    // et le scan stone_count O(361) ont été supprimés : ils représentaient ~100 évaluations
+    // de lignes par appel (×2 par move, ×50 moves, ×milliers de noeuds).
+    // Le bonus fourchette direct est déjà couvert par compute_fork_bonus() ci-dessus
+    // et par compute_fork_value() dans score_move_ordering().
     // Un coup qui prépare de futures menaces (pierres espacées mais alignables)
     int latent_threats = 0;
     int dx[4] = {1, 0, 1, 1};
@@ -727,65 +684,103 @@ int count_overlapping_threats(game *g, int player) {
 }
 
 /*
- * Nouvelle version O(1) de evaluate_board
- * Elle utilise les valeurs pré-calculées.
+ * evaluate_board - Évaluation symétrique de la position.
+ *
+ * RÈGLE FONDAMENTALE NEGAMAX : eval(pos, P1) == -eval(pos, P2)
+ * Sans cette symétrie, toute l'arborescence de recherche est corrompue.
+ *
+ * Structure :
+ *   1. Terminaux stricts  : victoire/défaite réelle → ±WIN_SCORE
+ *   2. Évaluation nette   : my_pos - opp_pos (score brut symétrique)
+ *   3. Plafonnement       : jamais ≥ WIN_SCORE-1000, pour ne pas
+ *                           déclencher la détection terminale dans negamax
+ *                           sur une position non-gagnée.
+ *
+ * L'agressivité (biais offensif/défensif) est gérée dans score_move_ordering,
+ * pas ici. evaluate_board doit rester neutre et symétrique.
  */
 int evaluate_board(game *g, int player) {
     int opponent = (player == P1) ? P2 : P1;
-    
-    // PHASE 5 : OFFENSIVE MAXIMALE AVEC DÉFENSE INTELLIGENTE
-    long long my_score = g->pos_score[player];
-    long long opp_score = g->pos_score[opponent];
-    
-    // Bonus captures
-    my_score += g->captures[player] * CAPTURE_BONUS;
-    opp_score += g->captures[opponent] * CAPTURE_BONUS;
-    
-    // Victoire par capture
-    if (g->captures[player] >= 5) return WIN_SCORE;
+
+    // 1. TERMINAUX : victoire par capture
+    if (g->captures[player] >= 5)   return  WIN_SCORE;
     if (g->captures[opponent] >= 5) return -WIN_SCORE;
-    
-    // Compter les pierres pour détecter l'ouverture
-    int stone_count = 0;
-    for (int i = 0; i < MAX_BOARD; i++)
-        if (g->board[i] != EMPTY) stone_count++;
-    
-    // STRATÉGIE ADAPTATIVE:
-    // - Ouverture: Ultra-agressif (construire avantage)
-    // - Mid-game: Agressif mais défense sur menaces critiques
-    
-    if (stone_count < 15) {
-        // OUVERTURE: Priorité absolue à l'offensive
-        my_score = (long long)(my_score * 5.0);
-        opp_score = (long long)(opp_score * 0.5);
-    } else {
-        // MID-GAME: Défense adaptative selon niveau de menace
-        
-        // Offensive: toujours boostée
-        my_score = (long long)(my_score * 4.0);
-        
-        // Défense: Dépend du danger adverse
-        double def_multiplier = 0.6; // Défaut: basse priorité
-        
-        // EXCEPTION CRITIQUE: Menaces mortelles DOIVENT être bloquées
-        // Si adversaire a OPEN_FOUR ou WIN_SCORE, défense = priorité absolue
-        if (g->max_threat_level[opponent] >= IDX_OPEN_FOUR) {
-            def_multiplier = 3.0; // Défense > Offensive pour survie
-        } else if (g->max_threat_level[opponent] >= IDX_CLOSED_FOUR) {
-            def_multiplier = 1.5; // Menace sérieuse, attention requise
-        } else if (g->max_threat_level[opponent] >= IDX_OPEN_THREE) {
-            def_multiplier = 0.8; // Légère attention
-        }
-        
-        opp_score = (long long)(opp_score * def_multiplier);
-    }
-    
+
+    // 2. TERMINAUX : victoire par alignement de 5
+    // threat_counts[p][IDX_WIN] est maintenu à jour par update_stats()
+    // à chaque apply_move / undo_move via update_impacted_scores().
+    if (g->threat_counts[player][IDX_WIN] > 0)   return  WIN_SCORE;
+    if (g->threat_counts[opponent][IDX_WIN] > 0) return -WIN_SCORE;
+
+    // 3. QUASI-TERMINAUX : double Open Four
+    // Si l'adversaire a ≥2 Open Fours simultanés, la position est perdue :
+    // on ne peut bloquer qu'une menace par coup. Retourner immédiatement le
+    // score plancher pour que negamax fuit cette branche au plus vite.
+    // Symétrique : si c'est nous qui avons ≥2 Open Fours, position gagnante.
+    int opp_open_fours = g->threat_counts[opponent][IDX_OPEN_FOUR];
+    int my_open_fours  = g->threat_counts[player][IDX_OPEN_FOUR];
+    if (opp_open_fours >= 2) return -(WIN_SCORE - 1001);
+    if (my_open_fours  >= 2) return  (WIN_SCORE - 1001);
+
+    // 3b. QUASI-TERMINAUX : double Closed Four
+    // Un Closed Four = 4 pierres avec 1 extrémité ouverte seulement.
+    // Un seul coup de cet adversaire transforme chaque Closed Four en victoire (si l'extrémité
+    // ouverte est libre). Avec 2+ Closed Fours simultanés : on ne peut bloquer qu'un seul.
+    // C'est la menace qui précède d'un coup le double Open Four — le vrai signal précoce.
+    int opp_closed_fours = g->threat_counts[opponent][IDX_CLOSED_FOUR];
+    int my_closed_fours  = g->threat_counts[player][IDX_CLOSED_FOUR];
+    if (opp_closed_fours >= 2) return -(WIN_SCORE - 2001);
+    if (my_closed_fours  >= 2) return  (WIN_SCORE - 2001);
+
+    // 4. ÉVALUATION SYMÉTRIQUE
+    // pos_score accumule tous les scores de ligne ; on ajoute le bonus capture.
+    long long my_score  = g->pos_score[player]   + (long long)g->captures[player]   * CAPTURE_BONUS;
+    long long opp_score = g->pos_score[opponent] + (long long)g->captures[opponent] * CAPTURE_BONUS;
+
     long long total = my_score - opp_score;
-    
-    // Sécurité overflow
-    if (total > INT_MAX) return INT_MAX;
-    if (total < INT_MIN) return INT_MIN;
-    
+
+    // 4b. MALUS DE PRÉ-FOURCHETTE ADVERSE (niveau Open Three)
+    // Si l'adversaire a déjà 2+ Open Threes actifs, la position est structurellement
+    // dangereuse même si le score brut semble équilibré. On pénalise pour que
+    // minimax préfère les branches où l'adversaire n'a pas encore construit ça.
+    int opp_open_threes = g->threat_counts[opponent][IDX_OPEN_THREE];
+    if (opp_open_threes >= 2) {
+        total -= (long long)(opp_open_threes - 1) * OPEN_FOUR;
+    }
+    // Symétriquement : bonus si c'est nous qui avons plusieurs Open Threes
+    int my_open_threes = g->threat_counts[player][IDX_OPEN_THREE];
+    if (my_open_threes >= 2) {
+        total += (long long)(my_open_threes - 1) * OPEN_FOUR;
+    }
+
+    // 4c. MALUS PRÉ-FOURCHETTE : Open Three + Closed Four
+    // 1 Open Three + 1 Closed Four = fourchette possible en 1 coup adverse :
+    // l'adversaire joue un coup qui étend simultanément les deux menaces.
+    // Ce pattern précède de 1-2 coups la crise niveau 3 — pénaliser maintenant
+    // force minimax à bloquer l'open three dès qu'un closed four est déjà posé.
+    if (opp_open_threes >= 1 && opp_closed_fours >= 1) {
+        total -= (long long)(opp_open_threes * opp_closed_fours) * OPEN_THREE;
+    }
+    if (my_open_threes >= 1 && my_closed_fours >= 1) {
+        total += (long long)(my_open_threes * my_closed_fours) * OPEN_THREE;
+    }
+
+    // 4d. MALUS DOUBLE-EXTENSION LATENTE (2+ Closed Threes en directions distinctes)
+    // 2 closed_threes sans open_three ni closed_four = structure "open two" positionnée
+    // en fourchette. L'adversaire peut créer 2 open_fours simultanés en 1 coup sans
+    // passer par les seuils de Fix C (open_three+closed_four) — invisible jusqu'à la crise.
+    // Malus proportionnel à OPEN_THREE pour forcer le blocage préventif.
+    int opp_closed_threes = g->threat_counts[opponent][IDX_CLOSED_THREE];
+    int my_closed_threes  = g->threat_counts[player][IDX_CLOSED_THREE];
+    if (opp_closed_threes >= 2) total -= (long long)(opp_closed_threes - 1) * OPEN_THREE;
+    if (my_closed_threes  >= 2) total += (long long)(my_closed_threes  - 1) * OPEN_THREE;
+
+    // 4. PLAFONNEMENT STRICT
+    // Empêche une position non-terminale (ex: 2 open fours = 20M pts)
+    // d'être confondue avec une vraie victoire par negamax.
+    if (total >=  (WIN_SCORE - 1000)) total =  (WIN_SCORE - 1001);
+    if (total <= -(WIN_SCORE - 1000)) total = -(WIN_SCORE - 1001);
+
     return (int)total;
 }
 

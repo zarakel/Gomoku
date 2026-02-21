@@ -52,7 +52,7 @@
 
 // Limites
 #define MAX_DEPTH 30
-#define TIME_LIMIT_MS 450 
+#define TIME_LIMIT_MS 400 
 
 // Valeurs cases
 #define EMPTY 0
@@ -261,7 +261,7 @@ int     evaluate_move_with_captures_full(game *g, int idx, int player);
 int     count_serious_threats(game *g, int player);
 
 // ai_tactics.c (VCF)
-bool    has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit);
+bool    has_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time);
 int     find_winning_vcf(game *g, int attacker);
 int     solve_defensive_crisis(game *g, int me);
 bool    check_five_align(game *g, int idx, int player);

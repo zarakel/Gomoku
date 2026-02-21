@@ -36,15 +36,20 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
         int count = generate_moves(g, moves, ia_player, depth, *best_move_out);
         if (count == 0) return prev_score; 
         if (*best_move_out == -1) *best_move_out = moves[0].index;
+        int opponent_asp = (ia_player == P1) ? P2 : P1;
 
         for (int i = 0; i < count; i++) {
             int idx = moves[i].index;
             MoveUndo undo;
             apply_move(g, idx, ia_player, &undo);
-            int val = minimax(g, depth - 1, alpha, beta, false, ia_player, start);
+            // Formulation negamax correcte : après le coup de ia_player,
+            // c'est l'adversaire qui joue → on passe opponent et on inverse la fenêtre.
+            // Avant ce fix, ia_player était repassé → l'adversaire ne jouait jamais
+            // au 1er niveau → scores fantômes à WIN_SCORE sur positions non forcées.
+            int val = -minimax(g, depth - 1, -beta, -alpha, false, opponent_asp, start);
             undo_move(g, ia_player, &undo);
 
-            if (val == TIMEOUT_CODE) { time_out = true; break; }
+            if (val == TIMEOUT_CODE || val == -TIMEOUT_CODE) { time_out = true; break; }
             if (val > current_best_score) {
                 current_best_score = val;
                 current_best_idx = idx;
@@ -85,9 +90,13 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         prev_score = score;
         printf("Depth %d complete. Score: %d\n", depth, score);
         
-        // Arret anticipe si victoire imminente ou si 60% du temps est consomme
-        // Permet de garder du temps pour finaliser le coup
-        if (score > WIN_SCORE - 5000 || (double)(clock() - start) / CLOCKS_PER_SEC > allocated_time * 0.60) break;
+        // Arret anticipe sur victoire/defaite reelle ou position determinée.
+        // Les terminaux stricts retournent ±WIN_SCORE exactement.
+        // Les positions non-terminales sont plafonnees a ±(WIN_SCORE-1001) :
+        // inutile de chercher plus profond si le score a atteint ce cap.
+        if (score >= WIN_SCORE - 1001 || score <= -(WIN_SCORE - 1001)) break;
+        // Laisser le timeout naturel gerer la limite de temps (90% du budget).
+        if ((double)(clock() - start) / CLOCKS_PER_SEC > allocated_time * 0.90) break;
     }
     return best_move;
 }
@@ -173,6 +182,23 @@ void makeIaMove(game *gameData, screen *windows) {
     }
 
     // PHASE 2 : RECHERCHE TACTIQUE ET STRATEGIQUE
+    // Priorite 0 : Defense forcee multi-menaces (avant VCF/minimax)
+    // Réservé UNIQUEMENT au niveau 3 (2+ menaces simultanées = mort mathématique).
+    // - Niveau 3 : l'adversaire a 2+ open fours ou 2+ coups gagnants → minimax ne peut
+    //   pas choisir car toutes les branches semblent perdantes. L'heuristique cherche
+    //   la case qui bloque le maximum de menaces en une fois.
+    // - Niveau 2 (1 menace) : minimax avec beam=12 trouve le bloc lui-même (SORT_BLOCK_WIN
+    //   en tête de l'ordering) et peut combiner défense + contre-attaque. On lui fait
+    //   confiance plutôt que de court-circuiter avec une décision purement heuristique.
+    if (!forcing_found && gameData->in_crisis && gameData->crisis_level >= 3) {
+        int defense_move = find_best_defense_with_threat_space(gameData, ia_player);
+        if (defense_move != -1 && !is_double_three(gameData, defense_move, ia_player)) {
+            best_move = defense_move;
+            forcing_found = true;
+            reason = "Defense multi-menaces";
+        }
+    }
+
     // Priorite 1 : VCF (sequences de menaces forcees menant a la victoire)
     // Priorite 2 : Minimax avec approfondissement iteratif (evaluation complete)
     if (!forcing_found) {
@@ -181,9 +207,10 @@ void makeIaMove(game *gameData, screen *windows) {
             best_move = vcf_move; reason = "VCF Gagnant";
         } else {
             best_move = run_iterative_deepening(gameData, ia_player, start);
-            // Sécurité anti-abandon : utiliser le meilleur coup défensif si position désespérée
-            if (best_move == -1 || evaluate_board(gameData, ia_player) < -WIN_SCORE / 2) {
-                // Utiliser les coups déjà générés et triés
+            // Fallback uniquement si minimax n'a retourné aucun coup (timeout dès depth 2)
+            // On ne jette JAMAIS un résultat minimax valide, même en position désespérée :
+            // c'est précisément là que minimax est le plus utile.
+            if (best_move == -1) {
                 for (int i = 0; i < count && i < 5; i++) {
                     if (!is_double_three(gameData, moves[i].index, ia_player)) {
                         best_move = moves[i].index;

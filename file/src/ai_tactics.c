@@ -16,7 +16,7 @@
  */
 
 #define VCF_MAX_DEPTH 30
-#define VCF_TIME_LIMIT 0.40 // 400ms max alloues au VCF (offensif et defensif)
+#define VCF_TIME_LIMIT 0.045 // 45ms max pour le VCF : laisse ~355ms a minimax
 
 // Cache global pour eviter de recalculer les memes positions
 static int vcf_cache[MAX_BOARD];      // -1 = non teste, 0 = echec, 1 = succes
@@ -126,6 +126,7 @@ static int generate_defensive_moves(game *g, int defender, MoveVCF *moves) {
 bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
     // 1. Check Limites
     if (depth > VCF_MAX_DEPTH) return false;
+    // Check timeout à chaque nœud : évite qu'un sous-arbre profond dépasse la limite.
     if ((double)(clock() - start_time) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) return false;
     int defender = (attacker == P1) ? P2 : P1;
 
@@ -139,7 +140,9 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
     if (attack_count == 0) return false; // Plus de coups forçants, attaque échouée
 
     for (int i = 0; i < attack_count; i++) {
-        
+        // Timeout check dans la boucle d'attaque : generate_defensive_moves est coûteux
+        if ((double)(clock() - start_time) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) return false;
+
         int atk_idx = attacks[i].move_idx;
         
         MoveUndo undo_atk;
@@ -167,6 +170,11 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
         } else {
             // Testons toutes les défenses
             for (int j = 0; j < def_count; j++) {
+                // Timeout check dans la boucle défense : on abandonne proprement
+                if ((double)(clock() - start_time) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) {
+                    undo_move(g, attacker, &undo_atk);
+                    return false;
+                }
                 int def_idx = defenses[j].move_idx;
                 MoveUndo undo_def;
                 apply_move(g, def_idx, defender, &undo_def);
@@ -198,11 +206,12 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
  * Wrapper public pour lancer une recherche VCF.
  * Interface simplifiee pour les autres modules.
  */
-bool has_vcf_win(game *g, int attacker, int depth, int max_depth, double time_limit) {
-    (void)max_depth; // Paramètre inutilisé pour l'instant
-    // Convertir time_limit_sec en clock ticks si nécessaire, ou utiliser clock()
-    // Ici on lance simplement la recherche avec le temps de départ actuel
-    return vcf_search(g, attacker, depth, clock());
+bool has_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time) {
+    (void)max_depth;
+    // On passe le même start_time que la boucle externe de find_winning_vcf :
+    // tous les tests partagent le même budget VCF_TIME_LIMIT au lieu
+    // de recevoir chacun un clock() frais (= 70ms supplémentaires par test).
+    return vcf_search(g, attacker, depth, start_time);
 }
 
 static bool opponent_has_unstoppable_win(game *g, int opponent) {
@@ -501,22 +510,15 @@ int find_winning_vcf(game *g, int attacker) {
     static int last_move = -1;
     
     if (vcf_cache_hash != g->current_hash) {
-        // Si c'est juste après un coup (hash différent), on invalide localement
-        if (last_hash != 0) {
-            vcf_cache_invalidate_area(last_move);
-            #ifdef DEBUG
-            printf(">>> VCF Cache : Clear partiel autour de (%d,%d)\n",
-                   GET_X(last_move), GET_Y(last_move));
-            #endif
-        } else {
-            // Sinon, reset complet (nouvelle partie)
-            memset(vcf_cache, -1, sizeof(vcf_cache));
-            #ifdef DEBUG
-            printf(">>> VCF Cache : Reset complet\n");
-            #endif
-        }
-        
+        // Reset complet à chaque changement de position.
+        // La validation partielle par zone était incorrecte (last_move jamais
+        // mis à jour → invalidation toujours sur (-1,0)) et insuffisante
+        // (un VCF dépend de tout le plateau, pas juste du voisinage).
+        memset(vcf_cache, -1, sizeof(vcf_cache));
         vcf_cache_hash = g->current_hash;
+        #ifdef DEBUG
+        printf(">>> VCF Cache : Reset\n");
+        #endif
     }
     
     last_hash = g->current_hash;
@@ -528,6 +530,18 @@ int find_winning_vcf(game *g, int attacker) {
     if (g->max_threat_level[defender] >= IDX_OPEN_FOUR) {
         #ifdef DEBUG
         printf(">>> VCF abandonné : adversaire a déjà un Open Four\n");
+        #endif
+        return -1;
+    }
+
+    // Si l'adversaire est en configuration pré-fourchette (1 open three + 1 closed four),
+    // ne pas lancer de VCF : la séquence d'attaque laisserait le temps à l'adversaire
+    // de compléter sa fourchette pendant qu'on prépare le VCF.
+    // Ce pattern correspond exactement au malus Fix C dans evaluate_board.
+    if (g->threat_counts[defender][IDX_OPEN_THREE] >= 1 &&
+        g->threat_counts[defender][IDX_CLOSED_FOUR] >= 1) {
+        #ifdef DEBUG
+        printf(">>> VCF abandonné : adversaire en pré-fourchette (open3+closed4)\n");
         #endif
         return -1;
     }
@@ -550,6 +564,17 @@ int find_winning_vcf(game *g, int attacker) {
     
     // ===== ÉTAPE 4 : RECHERCHE VCF AVEC CACHE =====
     for (int i = 0; i < count; i++) {
+        // TIMEOUT GLOBAL : tous les tests partagent le même budget VCF_TIME_LIMIT.
+        // Avant ce fix, chaque appel à vcf_search recevait un clock() frais → chaque
+        // test consommait 70ms indépendamment → 3 tests = 210ms+ rien que pour VCF.
+        if ((double)(clock() - start) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) {
+            #ifdef DEBUG
+            printf(">>> VCF timeout après %d tests (%.3fs)\n", 
+                   tests_performed, (double)(clock() - start) / CLOCKS_PER_SEC);
+            #endif
+            break;
+        }
+
         // OPTIMISATION CRITIQUE : Filtrage par menace minimale
         // Un VCF commence forcément par une menace sérieuse (Open 3 minimum)
         if (moves[i].score_estim < OPEN_THREE) {
@@ -561,7 +586,12 @@ int find_winning_vcf(game *g, int attacker) {
         }
         
         int idx = moves[i].index;
-        
+
+        // Sécurité : generate_moves peut parfois inclure des cases occupées
+        // (ex. cas limite de beam). On filtre ici pour éviter de jouer sur
+        // une case déjà prise (bug observé : même idx retourné deux tours de suite).
+        if (g->board[idx] != EMPTY) continue;
+
         // ===== OPTIMISATION : CHECK CACHE AVANT TEST =====
         if (vcf_cache[idx] == 0) {
             // Ce coup a déjà été testé et a échoué
@@ -624,8 +654,9 @@ int find_winning_vcf(game *g, int attacker) {
         }
         
         // B. Est-ce que ce coup force la victoire (VCF récursif) ?
-        bool vcf_found = has_vcf_win(g, attacker, 1, 6, 
-                                      (double)(clock() - start)/CLOCKS_PER_SEC + time_limit);
+        // On passe 'start' (timer de find_winning_vcf) pour que vcf_search
+        // partage le même budget au lieu de recevoir un clock() frais.
+        bool vcf_found = has_vcf_win(g, attacker, 1, 6, start);
         
         undo_move(g, attacker, &undo);
         
