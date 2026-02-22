@@ -130,8 +130,11 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
     if ((double)(clock() - start_time) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) return false;
     int defender = (attacker == P1) ? P2 : P1;
 
-    // 2. Check Victoire Immédiate (Déjà gagné ?)
-    if (evaluate_board(g, attacker) >= WIN_SCORE) return true;
+    // 2. Check Victoire Immédiate (Déjà gagné ?) — O(1) via threat_counts incrémental.
+    // evaluate_board() coûte O(n×dirs) à chaque nœud VCF, soit 50-100 évaluations de
+    // ligne par appel. Avec 30ms budget et 100+ nœuds, ça épuise le budget VCF.
+    // threat_counts[IDX_WIN] est mis à jour en O(1) par apply_move/undo_move.
+    if (g->threat_counts[attacker][IDX_WIN] > 0 || g->captures[attacker] >= 5) return true;
 
     // 3. Génération des coups d'attaque
     MoveVCF attacks[MAX_BOARD];
@@ -148,8 +151,8 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
         MoveUndo undo_atk;
         apply_move(g, atk_idx, attacker, &undo_atk);
         
-        // Si ce coup gagne immédiatement
-        if (evaluate_board(g, attacker) >= WIN_SCORE) {
+        // Si ce coup gagne immédiatement — O(1) via threat_counts.
+        if (g->threat_counts[attacker][IDX_WIN] > 0 || g->captures[attacker] >= 5) {
             undo_move(g, attacker, &undo_atk);
             return true;
         }

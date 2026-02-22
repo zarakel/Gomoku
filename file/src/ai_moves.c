@@ -72,15 +72,17 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     if (atk_score >= OPEN_FOUR) return SORT_THREAT_MAX + 5000000; // Boost massif
     
     // Niveau 2.5a : BLOCAGE FOURCHETTE ADVERSE (avant tout OPEN_THREE)
-    // Guard ÉLARGI : on calcule compute_fork_value si :
-    // - def_score >= CLOSED_THREE (menace locale forte), OU
-    // - l'adversaire a déjà ≥2 OPEN_TWO sur le plateau (convergence globale détectée).
-    //   Un OPEN_TWO seul = 4000 < CLOSED_THREE = 50000, donc le guard local manquait
-    //   les fourches construites depuis 2 groupes OPEN_TWO séparés en directions distinctes.
-    //   En élargissant au contexte global, on détecte P1 qui construit silencieusement
-    //   une double convergence (pattern responsable de la plupart des pertes en milieu de jeu).
+    // Guard ADAPTATIF selon la profondeur courante :
+    // - À la racine / proche racine (depth >= 4) : trigger élargi au contexte global.
+    //   Si P1 a ≥2 OPEN_TWO, on calcule compute_fork_value pour tous les candidats.
+    //   C'est là que la qualité du tri importe le plus.
+    // - En profondeur (depth < 4) : seulement si def_score local >= CLOSED_THREE.
+    //   À depth 1-3, le tri est dominé par TT + killer moves. Appeler compute_fork_value
+    //   (→ count_created_threats → 4×evaluate_line) sur 25 candidats × milliers de nœuds
+    //   multiplie le coût de generate_moves par ~3x → depth 6 ne complète jamais.
     int opp_fork_value = 0;
-    if (def_score >= CLOSED_THREE || g->threat_counts[opponent][IDX_OPEN_TWO] >= 2) {
+    bool global_fork_threat = (depth >= 4) && (g->threat_counts[opponent][IDX_OPEN_TWO] >= 2);
+    if (def_score >= CLOSED_THREE || global_fork_threat) {
         opp_fork_value = compute_fork_value(g, idx, opponent);
     }
     if (opp_fork_value > 0) {
@@ -167,6 +169,7 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
 
     if (depth >= 0 && depth < MAX_DEPTH) {
         if (idx == killer_moves[depth][0]) final_score += SORT_KILLER_1;
+        if (idx == killer_moves[depth][1]) final_score += SORT_KILLER_2;
     }
     final_score += history_heuristic[idx];
 
@@ -259,21 +262,31 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     // stone_count déjà calculé dans la boucle bbox ci-dessus (Fix E).
     int max_to_keep;
     if (g->in_crisis) {
-        // Crise : réduire le beam pour que minimax explore chaque option défensive
-        // plus profondément. Avec 60 coups, la profondeur effective est divisée par 12.
-        // Avec 12, on concentre la recherche sur les seuls coups qui comptent.
+        // Crise : beam restreint pour exploration défensive profonde.
         max_to_keep = 12;
-    } else if (stone_count < 15) {
-        max_to_keep = 35; // Début de partie : plus de coups
-    } else if (stone_count < 40) {
-        // Mid-game : 25 coups. Réduit de 30→25 pour que depth=4+ complète en temps.
-        // Les coups aux indices 26-29 sont des menaces faibles (< CLOSED_THREE)
-        // bien en dessous des menaces critiques toujours dans le top 20.
-        max_to_keep = 25;
     } else {
-        // End-game : plateau dense, les top 22 coups suffisent.
-        // Réduit de 30→22 pour permettre depth=6+ dans les positions chargées.
-        max_to_keep = 22;
+        // Base par phase de jeu
+        // Réduire le beam dans les premières phases permet d'atteindre depth 6+
+        // en early/mid game — c'est là que P1 construit des fourches silencieuses
+        // sur 3 coups. Beam plein (35) bloque à depth 4 (35^3 = 42875 nœuds vs
+        // 20^3 = 8000 avec base=20), insuffisant pour voir un plan à 3 demi-coups.
+        int base;
+        if (stone_count < 15)      base = 20;
+        else if (stone_count < 40) base = 22;
+        else                       base = 20;
+
+        // Réduction par profondeur RESTANTE — CONSERVATIVE.
+        // On ne réduit QU'aux vraies feuilles (depth == 0) et légèrement.
+        // Les niveaux 1-4 gardent le plein beam : c'est là que les coups
+        // silencieux de l'adversaire (fourches, captures) doivent être vus.
+        // Une réduction agressive sur depth 2-4 enlève les coups de l'adversaire
+        // qui ne sont pas encore des menaces classifiées → fourches invisibles.
+        // depth 0 : juste avant quiescence → -20% (rarement atteint avec beam plein)
+        // depth >= 1 : base inchangée
+        if (depth == 0) base = (base * 8) / 10;
+
+        if (base < 8) base = 8; // toujours au moins 8 coups explorés
+        max_to_keep = base;
     }
     
     return (count > max_to_keep) ? max_to_keep : count;

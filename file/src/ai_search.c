@@ -189,6 +189,22 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
 
         if (val >= beta) {
             debug_cutoff_count++;
+            // KILLER MOVES : mémoriser ce coup silencieux qui cause un cutoff.
+            // Évite de réexplorer des coups non-capturants qui battent beta.
+            // On ne met à jour que pour les coups sans capture pour ne pas
+            // poluer la table avec des coups tactiques évidents.
+            if (depth >= 0 && depth < MAX_DEPTH) {
+                if (killer_moves[depth][0] != idx) {
+                    killer_moves[depth][1] = killer_moves[depth][0];
+                    killer_moves[depth][0] = idx;
+                }
+            }
+            // HISTORY HEURISTIC : bonus proportionnel à la profondeur restante.
+            // depth² favorise les cutoffs à haute profondeur (plus significatifs).
+            if (idx >= 0 && idx < MAX_BOARD) {
+                history_heuristic[idx] += depth * depth;
+                if (history_heuristic[idx] > 20000) history_heuristic[idx] = 20000;
+            }
             tt_save(g->current_hash, depth, val, TT_LOWERBOUND, best_move);
             return val;
         }
