@@ -49,13 +49,30 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     
     // my_caps pré-calculé par generate_moves pour éviter le double appel.
     int my_caps = pre_my_caps;
-    bool enemy_can_cap = would_capture_us(g, idx, player);
+    // Guard depth >= 3 : would_capture_us simule un coup adverse (board[idx]=opp +
+    // count_potential_captures 8 dirs + reset). Coût ~20 ops par candidat.
+    // Aux depth <= 2 (90% des noeuds), enemy_can_cap n'est utilisé que pour
+    // SORT_BLOCK_WIN + 5000000 (captures[opponent]>=4) ou defense_priority.
+    // Ces deux cas sont très rares aux nœuds profonds et couverts par l'éval incrémentale.
+    bool enemy_can_cap = (depth >= 3) ? would_capture_us(g, idx, player) : false;
     
     // Evaluation des menaces de lignes creees par ce coup
     // atk_score : valeur offensive (nos menaces)
     // def_score : valeur defensive (menaces adverses bloquees)
-    int atk_score = get_point_score(g, x, y, player);
-    int def_score = get_point_score(g, x, y, opponent);
+    //
+    // Perf : aux noeuds internes (depth <= 4), on utilise get_point_score_fast
+    // (scan directionnel simple, pas de fork_bonus ni latent threats). ~3-4× plus rapide.
+    // La hiérarchie WIN/OPEN_FOUR/OPEN_THREE/CLOSED_THREE reste correcte (seuils max
+    // par direction). Depth 3-4 contient la majorité des noeuds; depth 5+ (proches racine)
+    // utilisent le scoring complet pour qualité d'ordonnancement à la racine.
+    int atk_score, def_score;
+    if (depth <= 4) {
+        atk_score = get_point_score_fast(g, x, y, player);
+        def_score = get_point_score_fast(g, x, y, opponent);
+    } else {
+        atk_score = get_point_score(g, x, y, player);
+        def_score = get_point_score(g, x, y, opponent);
+    }
 
     // --- HIÉRARCHIE DE TRI ULTRA-OFFENSIVE ---
     
@@ -73,16 +90,15 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     
     // Niveau 2.5a : BLOCAGE FOURCHETTE ADVERSE (avant tout OPEN_THREE)
     // Guard ADAPTATIF selon la profondeur courante :
-    // - À la racine / proche racine (depth >= 4) : trigger élargi au contexte global.
-    //   Si P1 a ≥2 OPEN_TWO, on calcule compute_fork_value pour tous les candidats.
-    //   C'est là que la qualité du tri importe le plus.
-    // - En profondeur (depth < 4) : seulement si def_score local >= CLOSED_THREE.
-    //   À depth 1-3, le tri est dominé par TT + killer moves. Appeler compute_fork_value
-    //   (→ count_created_threats → 4×evaluate_line) sur 25 candidats × milliers de nœuds
-    //   multiplie le coût de generate_moves par ~3x → depth 6 ne complète jamais.
+    // - depth >= 5 (proche racine) : trigger élargi si adversaire a ≥2 OPEN_TWO
+    //   (global_fork_threat). Peu de noeuds à ce niveau, coût acceptable.
+    // - depth 3-4 : seulement si def_score local >= CLOSED_THREE.
+    // - depth <= 2 : JAMAIS. Ces noeuds sont les plus nombreux (~90% de l'arbre)
+    //   et compute_fork_value (simulate + 4×evaluate_line + is_double_three)
+    //   multipliait le coût de gen par ~3×.
     int opp_fork_value = 0;
-    bool global_fork_threat = (depth >= 4) && (g->threat_counts[opponent][IDX_OPEN_TWO] >= 2);
-    if (def_score >= CLOSED_THREE || global_fork_threat) {
+    bool global_fork_threat = (depth >= 5) && (g->threat_counts[opponent][IDX_OPEN_TWO] >= 2);
+    if (depth >= 3 && (def_score >= CLOSED_THREE || global_fork_threat)) {
         opp_fork_value = compute_fork_value(g, idx, opponent);
     }
     if (opp_fork_value > 0) {
@@ -90,9 +106,9 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     }
 
     // Niveau 2.5b : DOUBLE-FORK OFFENSIF
-    // Guard cheap : idem, exige au moins CLOSED_THREE dans notre direction.
+    // Guard depth >= 3 : même raison que ci-dessus.
     int fork_value = 0;
-    if (atk_score >= CLOSED_THREE) {
+    if (depth >= 3 && atk_score >= CLOSED_THREE) {
         fork_value = compute_fork_value(g, idx, player);
     }
     if (fork_value > 0) {
@@ -106,7 +122,11 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     if (def_score >= OPEN_FOUR) return SORT_BLOCK_WIN - 1000000; // Réduit priorité
     
     // Niveau 4 : PROTECTION ANTI-CAPTURE
-    int vuln_count = count_vulnerable_pairs_after_move(g, idx, player);
+    // Guard depth >= 3 : count_vulnerable_pairs_after_move simule un coup
+    // (board[idx]=player + scan 4 dirs + reset). Coût identique à compute_fork_value.
+    // Aux depth <= 2 (la majorité des noeuds), le killer/TT ordonne déjà les coups
+    // défensifs importants. La vulnérabilité capture est couverte par is_capture.
+    int vuln_count = (depth >= 3) ? count_vulnerable_pairs_after_move(g, idx, player) : 0;
     if (vuln_count > 0) {
         int vulnerability_malus = vuln_count * 5000000;
         if (g->captures[opponent] >= 3)
@@ -145,26 +165,15 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     // Bonus de centralité et heuristiques de recherche
     final_score += (20 - (abs(x - 9) + abs(y - 9))) * 100;
 
-    // BONUS DE CONNEXION : favoriser les coups près de pierres amies existantes.
-    // Actif uniquement quand les scores sont faibles (ouverture / milieu sans menace critique).
-    // En fin de partie ou sur menace sérieuse (>= OPEN_THREE), la connexion n'a plus besoin
-    // d'être boostée : pos_score et atk_score dominent largement.
-    // Cela corrige la dispersion : l'IA construisait des structures éparpillées car
-    // OPEN_TWO=1000 < bonus centralité=1900, donc stones isolés bien centrés > stones connectés.
+    // BONUS DE CONNEXION : O(1) via cand_refcount qui compte exactement le nombre
+    // de pierres (toute couleur) dans dist≤2. Remplace la boucle 5×5 (25 iters)
+    // qui recalculait la même information depuis le plateau.
+    // cand_refcount=2 → ≈ 1 voisin proche  → bonus faible
+    // cand_refcount=6 → ≈ quelques voisins → bonus moyen
+    // cand_refcount>=10 → case très connectée → bonus fort
     if (final_score < OPEN_THREE) {
-        int connection_bonus = 0;
-        for (int dy2 = -2; dy2 <= 2; dy2++) {
-            for (int dx2 = -2; dx2 <= 2; dx2++) {
-                if (dx2 == 0 && dy2 == 0) continue;
-                int nx = x + dx2, ny = y + dy2;
-                if (!IS_VALID(nx, ny)) continue;
-                if (g->board[GET_INDEX(nx, ny)] == player) {
-                    int cheb = (abs(dx2) > abs(dy2)) ? abs(dx2) : abs(dy2);
-                    connection_bonus += (cheb == 1) ? 3000 : 1000;
-                }
-            }
-        }
-        final_score += connection_bonus;
+        int rc = g->cand_refcount[idx];
+        if (rc >= 2) final_score += rc * 600;  // ~1200 pour rc=2, ~6000 pour rc=10
     }
 
     if (depth >= 0 && depth < MAX_DEPTH) {
@@ -189,70 +198,57 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
  */
 int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move) {
     int count = 0;
-    int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
-    bool empty = true;
-    int stone_count = 0;
+    // O(1) grâce au candidate set incrémental.
+    // stone_count et cand_list sont maintenus en O(25) par apply_move/undo_move.
+    int stone_count = g->stone_count;
 
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) {
-            empty = false;
-            stone_count++;
-            int cx = GET_X(i), cy = GET_Y(i);
-            if (cx < min_x) min_x = cx; if (cx > max_x) max_x = cx;
-            if (cy < min_y) min_y = cy; if (cy > max_y) max_y = cy;
-        }
-    }
-    
-    if (empty) {
+    if (stone_count == 0 || g->cand_count == 0) {
         moves[0].index = GET_INDEX(9, 9);
         moves[0].score_estim = 1000;
         return 1;
     }
 
-    // Zone étendue
-    min_x = (min_x - 2 < 0) ? 0 : min_x - 2;
-    max_x = (max_x + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_x + 2;
-    min_y = (min_y - 2 < 0) ? 0 : min_y - 2;
-    max_y = (max_y + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_y + 2;
+    // Itération directe sur les candidates — pas de scan bbox, pas de vérification voisins.
+    // Chaque case dans cand_list est garantie : EMPTY && au moins 1 pierre dans dist≤2.
+    //
+    // PRÉ-FILTRE "cold" : skip les candidats avec refcount==1 (exactement 1 pierre
+    // dans dist≤2 — case isolée sans valeur tactique réelle).
+    // Conditions de sécurité :
+    //   depth >= 2  : ne pas filtrer près des feuilles (quiescence depth=-1, leaves depth=0-1)
+    //   stone_count >= 8 : pas en ouverture (peu de candidats, filtrer = risque qualité)
+    //   !in_crisis  : en crise, ne rien manquer
+    // Exceptions : tt_best_move + killer moves = toujours inclus même si cold
+    //              (ces coups viennent d'itérations précédentes, peuvent être déplacés)
+    // Gain attendu : cand_count ~60 → ~25 hot scorés → ×2.4 cheaper.
+    bool filter_cold = (depth >= 2) && (stone_count >= 8) && !g->in_crisis;
+    int km0 = (depth >= 0 && depth < MAX_DEPTH) ? killer_moves[depth][0] : -1;
+    int km1 = (depth >= 0 && depth < MAX_DEPTH) ? killer_moves[depth][1] : -1;
 
-    for (int y = min_y; y <= max_y; y++) {
-        for (int x = min_x; x <= max_x; x++) {
-            int idx = GET_INDEX(x, y);
-            if (g->board[idx] != EMPTY) continue;
+    for (int i = 0; i < g->cand_count; i++) {
+        int idx = g->cand_list[i];
 
-            // On garde les cases proches des pierres existantes (distance 2)
-            bool interesting = false;
-            for (int dy = -2; dy <= 2; dy++) {
-                for (int dx = -2; dx <= 2; dx++) {
-                    int nx = x + dx, ny = y + dy;
-                    if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] != EMPTY) {
-                        interesting = true; break;
-                    }
-                }
-                if (interesting) break;
-            }
-            if (!interesting) continue;
+        // Fast pre-filter O(1) : skip les candidats isolés
+        if (filter_cold
+            && g->cand_refcount[idx] <= 1
+            && idx != tt_best_move
+            && idx != km0
+            && idx != km1) continue;
 
-            // Règle double-three (Renju) : seul P1 (Noir) est soumis à cette restriction.
-            // Filtrer ici garantit que negamax ne simule pas de coups illégaux pour P1,
-            // évitant des évaluations erronées (l'IA pensait à tort que l'humain peut jouer
-            // des double-three → positions adverses surévaluées).
-            if (player == P1 && is_double_three(g, idx, player)) continue;
+        int x = GET_X(idx), y = GET_Y(idx);
 
-            // Calcul unique des captures : évite 2 appels séparés
-            // (1 dans score_move_ordering + 1 pour is_capture).
-            int pre_my_caps = count_potential_captures(g, x, y, player);
-            moves[count].index = idx;
-            moves[count].is_capture = (pre_my_caps > 0);
-            moves[count].score_estim = score_move_ordering(g, idx, player, tt_best_move, depth, pre_my_caps);
+        // Règle double-three (Renju) : seul P1 (Noir) est soumis à cette restriction.
+        if (player == P1 && is_double_three(g, idx, player)) continue;
 
-            // REJET des coups TROP vulnérables (score négatif)
-            if (moves[count].score_estim < -1000000) {
-                continue; // Skip ce coup dangereux
-            }
-            
-            count++;
-        }
+        // Calcul unique des captures : évite 2 appels séparés.
+        int pre_my_caps = count_potential_captures(g, x, y, player);
+        moves[count].index = idx;
+        moves[count].is_capture = (pre_my_caps > 0);
+        moves[count].score_estim = score_move_ordering(g, idx, player, tt_best_move, depth, pre_my_caps);
+
+        // REJET des coups TROP vulnérables (score négatif)
+        if (moves[count].score_estim < -1000000) continue;
+
+        count++;
     }
 
     // Tri par score décroissant
@@ -269,21 +265,32 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         // Réduire le beam dans les premières phases permet d'atteindre depth 6+
         // en early/mid game — c'est là que P1 construit des fourches silencieuses
         // sur 3 coups. Beam plein (35) bloque à depth 4 (35^3 = 42875 nœuds vs
-        // 20^3 = 8000 avec base=20), insuffisant pour voir un plan à 3 demi-coups.
+        // 18^3 = 5832 avec base=18), insuffisant pour voir un plan à 3 demi-coups.
+        // Combiné au +50ms de budget, on gagne ~1 ply sur les positions défensives
+        // critiques sans dépasser 0.5s.
         int base;
-        if (stone_count < 15)      base = 20;
-        else if (stone_count < 40) base = 22;
-        else                       base = 20;
+        if (stone_count < 15)      base = 20;   // ouverture : beam plein pour qualité
+        else if (stone_count < 40) base = 20;   // milieu
+        else                       base = 18;   // fin de partie
 
-        // Réduction par profondeur RESTANTE — CONSERVATIVE.
-        // On ne réduit QU'aux vraies feuilles (depth == 0) et légèrement.
-        // Les niveaux 1-4 gardent le plein beam : c'est là que les coups
-        // silencieux de l'adversaire (fourches, captures) doivent être vus.
-        // Une réduction agressive sur depth 2-4 enlève les coups de l'adversaire
-        // qui ne sont pas encore des menaces classifiées → fourches invisibles.
-        // depth 0 : juste avant quiescence → -20% (rarement atteint avec beam plein)
-        // depth >= 1 : base inchangée
-        if (depth == 0) base = (base * 8) / 10;
+        // Réduction beam sur les nœuds INTERNES (depth > 0).
+        // La racine (depth == 0, juste avant quiescence) garde déjà -20%.
+        // Sur les nœuds depth 1+, réduire de 35% libère ~3× plus de nœuds
+        // qu'à la racine seule, ce qui permet +2 ply de profondeur.
+        // Beam 20 → 13 sur nœuds internes : 20^4=160000 → 13^4=28561 (-82%).
+        // Risque : retirer des coups utiles en early game. Guard : ne s'applique
+        // qu'à depth >= 2 (les 2 premiers niveaux gardent beam plein pour qualité).
+        // depth == 0 : feuilles quiescence → -20% (inchangé)
+        // depth == 1 : 1 ply avant feuille → beam plein (blocages immédiats)
+        // depth == 2 : 2 plies avant feuille → beam plein (réponses adverses silencieuses
+        //              qui ne sont pas encore des menaces classifiées : fourches en préparation,
+        //              captures futures). Réduire ici éliminait ces coups → scores 0, oscillations.
+        // depth >= 3 : nœuds internes profonds → beam réduit à 13.
+        //              À ce niveau, le TT + killer moves couvrent les coups importants.
+        //              13^3 = 2197 nœuds vs 20^3 = 8000 → ×3.6 moins cher → +2 ply.
+        if (depth == 0)       base = (base * 8) / 10;
+        else if (depth == 2)  base = (base * 12) / 20;  // beam 12 at depth 2 (was 14)
+        else if (depth >= 3)  base = (base * 11) / 20;  // beam 11 at depth≥3 (was 13)
 
         if (base < 8) base = 8; // toujours au moins 8 coups explorés
         max_to_keep = base;

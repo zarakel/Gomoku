@@ -24,6 +24,20 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
         if (beta > WIN_SCORE + 10000) beta = WIN_SCORE + 10000;
     }
 
+    // Générer les coups UNE SEULE FOIS avant la boucle aspiration.
+    // Sur fail-low ou fail-high, on relance la recherche avec une fenêtre élargie
+    // mais le même ordre de coups : le tri ne change pas entre itérations puisque
+    // la TT ne sera mise à jour qu'après la 1ère recherche complète, et les scores
+    // d'ordonnancement (captures, menaces) ne dépendent pas de la fenêtre alpha-beta.
+    // Avant ce fix : generate_moves (qsort sur 20 coups + score_move_ordering ×20)
+    // était appelé jusqu'à 3× par depth sur les positions oscillantes → ×3 overhead
+    // sur exactement les positions difficiles où l'aspiration fail le plus souvent.
+    MoveCandidate moves[MAX_BOARD];
+    int count = generate_moves(g, moves, ia_player, depth, *best_move_out);
+    if (count == 0) return prev_score;
+    if (*best_move_out == -1) *best_move_out = moves[0].index;
+    int opponent_asp = (ia_player == P1) ? P2 : P1;
+
     int loop_guard = 0;
     while (loop_guard++ < 3) {
         int alpha_origin = alpha;
@@ -31,12 +45,6 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
         int current_best_idx = -1;
         int current_best_score = INT_MIN;
         bool time_out = false;
-        
-        MoveCandidate moves[MAX_BOARD];
-        int count = generate_moves(g, moves, ia_player, depth, *best_move_out);
-        if (count == 0) return prev_score; 
-        if (*best_move_out == -1) *best_move_out = moves[0].index;
-        int opponent_asp = (ia_player == P1) ? P2 : P1;
 
         for (int i = 0; i < count; i++) {
             int idx = moves[i].index;
@@ -44,8 +52,6 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
             apply_move(g, idx, ia_player, &undo);
             // Formulation negamax correcte : après le coup de ia_player,
             // c'est l'adversaire qui joue → on passe opponent et on inverse la fenêtre.
-            // Avant ce fix, ia_player était repassé → l'adversaire ne jouait jamais
-            // au 1er niveau → scores fantômes à WIN_SCORE sur positions non forcées.
             int val = -minimax(g, depth - 1, -beta, -alpha, false, opponent_asp, start);
             undo_move(g, ia_player, &undo);
 
@@ -58,11 +64,11 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
             if (alpha >= beta) { debug_cutoff_count++; break; }
         }
 
-        if (time_out) return TIMEOUT_CODE; 
-        if (depth > 2 && (current_best_score < alpha_origin || current_best_score > beta_origin)) {
-            alpha = -WIN_SCORE - 10000; 
+        if (time_out) return TIMEOUT_CODE;
+        if (depth > 2 && (current_best_score <= alpha_origin || current_best_score >= beta_origin)) {
+            alpha = -WIN_SCORE - 10000;
             beta = WIN_SCORE + 10000;
-            continue; 
+            continue;
         }
         *best_move_out = current_best_idx;
         return current_best_score;
@@ -82,6 +88,9 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
     int prev_score = 0;
     double allocated_time = (double)TIME_LIMIT_MS / 1000.0;
 
+    // Step=2 sur depths pairs : évite l'oscillation de parité (odd/even parity effect).
+    // À depth impair, P2 joue en dernier → scores artificiellement gonflés → faux WIN_SCORE.
+    // Même parité garantit que le fallback est toujours comparable au depth précédent.
     for (int depth = 2; depth <= MAX_DEPTH; depth += 2) {
         if (best_move != -1) prev_best_move = best_move;
         int score = run_aspiration_search(g, depth, prev_score, &best_move, ia_player, start);
@@ -89,16 +98,23 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
 
         prev_score = score;
         printf("Depth %d complete. Score: %d\n", depth, score);
-        
-        // Arret anticipe sur victoire/defaite reelle ou position determinée.
-        // Les terminaux stricts retournent ±WIN_SCORE exactement.
-        // Les positions non-terminales sont plafonnees a ±(WIN_SCORE-1001) :
-        // inutile de chercher plus profond si le score a atteint ce cap.
+
+        // ASPIRATION GUARD : si le score est quasi-terminal (±WIN_SCORE ± 5000),
+        // ne pas l'utiliser comme centre de fenêtre pour la prochaine depth.
+        // Un score quasi-terminal biaise la fenêtre aspiration → tous les coups
+        // sont clampés au bord → depth suivante retourne le même biais en cascade.
+        // On force prev_score=0 pour garantir une fenêtre ouverte.
+        if (abs(score) >= WIN_SCORE - 5000) {
+            prev_score = 0;
+        }
+
+        // Arret anticipe sur victoire/defaite reelle ou position quasi-déterminée.
+        // Seuil : WIN_SCORE - 3000 (= 19997000) pour capturer les scores comme
+        // ±19997999 qui indiquent une issue forcée à quelques coups.
+        // Un seuil trop serré (ex: -1001) laissait ces scores passer → depths
+        // supplémentaires inutiles → spike 0.5s+. Seuil aligné sur aspiration guard.
         // IMPORTANT : on n'accepte un quasi-terminal qu'à partir de depth 4.
-        // Un quasi-terminal à depth 2 est souvent un faux positif (P1 peut
-        // contrer en 2 coups ce que depth 2 ne voit pas). Exiger depth >= 4
-        // garantit que P1 a eu au moins 2 tours pour répondre dans la simulation.
-        if (depth >= 4 && (score >= WIN_SCORE - 1001 || score <= -(WIN_SCORE - 1001))) break;
+        if (depth >= 4 && (score >= WIN_SCORE - 3000 || score <= -(WIN_SCORE - 3000))) break;
         // Laisser le timeout naturel gerer la limite de temps (90% du budget).
         if ((double)(clock() - start) / CLOCKS_PER_SEC > allocated_time * 0.90) break;
     }

@@ -37,6 +37,7 @@ void resetGame(game *gameData, screen *windows)
 
     resetTimer(&gameData->ia_timer);
     clear_heuristics();
+    cand_rebuild(gameData); // Remet à zéro le candidate set incrémental
     
     windows->changed = true;
     windows->resized = true;

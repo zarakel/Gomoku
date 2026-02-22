@@ -77,6 +77,8 @@ bool initialized(void *args, screen *windows, game *gameData)
     gameData->crisis_move_count = 0;
     memset(gameData->crisis_moves, -1, sizeof(gameData->crisis_moves));
 
+    cand_rebuild(gameData); // Initialise le candidate set incrémental
+
     return true;
 }
 

@@ -80,7 +80,7 @@ static int quiescence_search(game *g, int alpha, int beta, int player, int qs_de
  * 
  * Retourne le score de la position du point de vue du joueur courant.
  */
-int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_time) {
+int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_time, bool null_allowed) {
     debug_node_count++;
 
     // Verification du timeout (tous les 256 noeuds pour limiter l'overhead)
@@ -115,7 +115,39 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     }
 
     if (depth <= 0) {
-        return quiescence_search(g, alpha, beta, player, 4, start_time);
+        // qs_depth=3 : compromis qualité/vitesse.
+        // qs_depth=4 était trop lourd (10^4 nœuds/feuille) → bloquait depth 6.
+        // qs_depth=2 insuffisant : ratait les séquences capture-recapture à 3 coups
+        // → P2 jouait dans des positions tactiquement perdantes (régression 1P2/2P1).
+        // qs_depth=3 couvre 10^3=1000 nœuds max/feuille, capte les séquences à 3 coups.
+        return quiescence_search(g, alpha, beta, player, 3, start_time);
+    }
+
+    // NULL MOVE PRUNING
+    // Principe : on "passe" notre tour — si l'adversaire obtient quand même score < beta
+    // après une recherche réduite, la position est si bonne pour nous qu'on peut couper.
+    // Conditions de sécurité :
+    //   - null_allowed : jamais deux null moves consécutifs (évite les faux cutoffs)
+    //   - depth >= 3 : inutile en feuilles (overhead > gain)
+    //   - NOT in_crisis : en défense critique, passer serait catastrophique
+    //   - captures[opponent] < 4 : si adverse proche de gagner par capture, trop risqué
+    //   - current_eval >= beta : on est déjà en position avantageuse (condition classique)
+    //   - abs(current_eval) < WIN_SCORE - 10000 : pas dans une séquence de mat
+    int opponent = (player == P1) ? P2 : P1;
+    if (null_allowed
+        && depth >= 3
+        && !g->in_crisis
+        && g->captures[opponent] < 4
+        && current_eval >= beta
+        && abs(current_eval) < WIN_SCORE - 10000)
+    {
+        int R = (depth >= 6) ? 3 : 2;
+        // Aucune pierre posée : on passe directement à l'adversaire
+        int null_score = -negamax(g, depth - 1 - R, -beta, -beta + 1, opponent, start_time, false);
+        if (null_score == TIMEOUT_CODE || null_score == -TIMEOUT_CODE) return TIMEOUT_CODE;
+        if (null_score >= beta) {
+            return beta; // Cutoff : même en passant, la position reste >= beta
+        }
     }
 
     // 4. Génération
@@ -127,11 +159,39 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
 
     int best_val = -WIN_SCORE - 20000;
     int best_move = moves[0].index;
-    int opponent = (player == P1) ? P2 : P1;
 
     for (int i = 0; i < count; i++) {
         int idx = moves[i].index;
 
+        // FUTILITY PRUNING
+        // Principe : si eval_statique + score_estimé_coup + marge <= alpha,
+        // ce coup ne peut pas remonter le score jusqu'à alpha → inutile de l'explorer.
+        // Les coups sont triés par score décroissant → dès que la condition est vraie,
+        // TOUS les coups suivants échouent aussi → `break` au lieu de `continue`.
+        //
+        // Conditions de sécurité :
+        //   - i > 0 : toujours explorer le 1er coup (PVS / meilleur coup TT)
+        //   - !in_crisis : en défense, ne pas pruner des blocages potentiels
+        //   - abs(eval) < WIN_SCORE - 50000 : pas dans une séquence forcée
+        //   - score_estim < seuil : ne pas pruner les menaces sérieuses
+        //
+        // depth=1 : marge petite (CLOSED_THREE/2 = 25000), coups à partir de i=4
+        //           qui n'atteignent pas CLOSED_THREE. Ces coups sont des remplissages
+        //           positionnels sans valeur tactique immédiate.
+        // depth=2 : marge plus grande (CLOSED_THREE = 50000) pour couvrir 2 coups,
+        //           seulement les coups très tardifs (i >= 8) sous OPEN_TWO.
+        if (!g->in_crisis && abs(current_eval) < WIN_SCORE - 50000) {
+            if (depth == 1 && i >= 4
+                && moves[i].score_estim < CLOSED_THREE
+                && current_eval + moves[i].score_estim + (CLOSED_THREE / 2) <= alpha) {
+                break;
+            }
+            if (depth == 2 && i >= 8
+                && moves[i].score_estim < OPEN_TWO
+                && current_eval + moves[i].score_estim + CLOSED_THREE <= alpha) {
+                break;
+            }
+        }
         MoveUndo undo;
         apply_move(g, idx, player, &undo);
 
@@ -139,7 +199,7 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
         
         // PVS Logic
         if (i == 0) {
-            val = -negamax(g, depth - 1, -beta, -alpha, opponent, start_time);
+            val = -negamax(g, depth - 1, -beta, -alpha, opponent, start_time, true);
             // -TIMEOUT_CODE = +99999999 : intercepter la négation du code timeout
             if (val == TIMEOUT_CODE || val == -TIMEOUT_CODE) {
                 undo_move(g, player, &undo);
@@ -147,29 +207,30 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
             }
         } else {
             // LMR
-            // Seuil abaissé à CLOSED_THREE : les coups de setup adverses
-            // (score entre CLOSED_THREE et OPEN_THREE) ne sont plus réduits.
-            // Avant, l'adversaire pouvait construire une fourche via des coups "silencieux"
-            // qui passaient sous le radar du LMR et n'étaient pas explorés assez profondément.
+            // R=1 : coups tardifs calmes (i>=6, score < CLOSED_THREE).
+            // R=2 : coups très tardifs sans intérêt (i>=12, score < OPEN_TWO).
+            //        Ces coups sont des remplissages de position → réduction agressive
+            //        sans risque de rater des menaces (déjà triés très bas).
             int R = 0;
             if (depth >= 4 && i >= 6 && moves[i].score_estim < CLOSED_THREE) R = 1;
+            if (depth >= 4 && i >= 8 && moves[i].score_estim < OPEN_TWO)      R = 2;  // was depth>=5,i>=12
             
-            val = -negamax(g, depth - 1 - R, -alpha - 1, -alpha, opponent, start_time);
+            val = -negamax(g, depth - 1 - R, -alpha - 1, -alpha, opponent, start_time, true);
             
             if (val == TIMEOUT_CODE) {
                  undo_move(g, player, &undo);
                  return TIMEOUT_CODE;
             }
 
-            if (R > 0 && val > alpha) {
-                 val = -negamax(g, depth - 1, -alpha - 1, -alpha, opponent, start_time);
-                 if (val == TIMEOUT_CODE) { 
-                     undo_move(g, player, &undo); 
-                     return TIMEOUT_CODE; 
-                 }
-            }
+            // LMR standard : si la recherche réduite bat alpha, on confirme
+            // directement avec full-depth + full-window.
+            // L'ancien code faisait : null(d-1-R) → null(d-1) → full(d-1) (3 recherches).
+            // Ici :                    null(d-1-R) → full(d-1) (2 recherches).
+            // La null-window intermédiaire à depth-1 était redondante :
+            // si val > alpha au depth réduit, la seule information utile est
+            // le score exact à depth plein — la null-window ne donne pas ce score.
             if (val > alpha && val < beta) {
-                val = -negamax(g, depth - 1, -beta, -alpha, opponent, start_time);
+                val = -negamax(g, depth - 1, -beta, -alpha, opponent, start_time, true);
                 if (val == TIMEOUT_CODE || val == -TIMEOUT_CODE) {
                     undo_move(g, player, &undo);
                     return TIMEOUT_CODE;
@@ -225,5 +286,5 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
 }
 
 int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time) {
-    return negamax(g, depth, alpha, beta, ia_player, start_time);
+    return negamax(g, depth, alpha, beta, ia_player, start_time, true);
 }

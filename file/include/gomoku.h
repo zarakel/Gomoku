@@ -162,6 +162,15 @@ typedef struct game {
     int     crisis_level;
     int     crisis_move_count;
     int     crisis_moves[10];
+    // --- CANDIDATE SET INCRÉMENTAL ---
+    // Maintenu en O(25) par apply_move/undo_move.
+    // Remplace le scan bbox O(361) dans generate_moves → +2 ply.
+    int8_t  cand_refcount[MAX_BOARD]; // Nb de pierres dans dist≤2 de chaque case
+    bool    in_cand[MAX_BOARD];       // Cette case est-elle candidate ?
+    int     cand_list[MAX_BOARD];     // Liste compacte des cases candidates
+    int     cand_count;               // Taille de cand_list
+    int     cand_pos[MAX_BOARD];      // Position de chaque case dans cand_list (O(1) remove)
+    int     stone_count;              // Nb de pierres sur le plateau (maintenu incrémentalement)
 } game;
 
 typedef struct both {
@@ -249,6 +258,7 @@ TTEntry* tt_probe(uint64_t key);
 // ai_logic.c
 void    apply_move(game *g, int idx, int player, MoveUndo *undo);
 void    undo_move(game *g, int player, MoveUndo *undo);
+void    cand_rebuild(game *g);
 
 // ai_moves.c
 int     generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move);

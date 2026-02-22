@@ -184,6 +184,7 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
                 // -----------------------------------------------
                 
                 // 4. Changer de tour
+                cand_rebuild(gameData); // Synchro candidate set après coup humain (bypass apply_move)
                 gameData->turn = (gameData->turn == P1) ? P2 : P1;
                 windows->changed = true;
             }

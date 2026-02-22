@@ -1,5 +1,90 @@
 #include "../include/gomoku.h"
 
+// ---------------------------------------------------------------------------
+// CANDIDATE SET - Helpers internes
+//
+// cand_refcount[n] = nombre de pierres (toute couleur) dans dist≤2 de n.
+// Une case est candidate ssi board[n]==EMPTY && cand_refcount[n]>0.
+// Les 5 fonctions ci-dessous sont O(25) — aucun scan du plateau.
+// ---------------------------------------------------------------------------
+
+static inline void cand_add(game *g, int idx) {
+    if (g->in_cand[idx]) return;
+    g->in_cand[idx] = true;
+    g->cand_pos[idx] = g->cand_count;
+    g->cand_list[g->cand_count++] = idx;
+}
+
+static inline void cand_remove(game *g, int idx) {
+    if (!g->in_cand[idx]) return;
+    g->in_cand[idx] = false;
+    int pos = g->cand_pos[idx];
+    int last = g->cand_list[--g->cand_count];
+    g->cand_list[pos] = last;
+    g->cand_pos[last] = pos;
+}
+
+// Après g->board[idx] = player  (pierre posée)
+static void cand_on_place(game *g, int idx) {
+    cand_remove(g, idx); // idx n'est plus une case vide
+    int x = GET_X(idx), y = GET_Y(idx);
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx, ny = y + dy;
+            if (!IS_VALID(nx, ny)) continue;
+            int n = GET_INDEX(nx, ny);
+            g->cand_refcount[n]++;
+            if (g->board[n] == EMPTY && g->cand_refcount[n] == 1)
+                cand_add(g, n);
+        }
+    }
+}
+
+// Après g->board[idx] = EMPTY  (pierre retirée)
+static void cand_on_remove(game *g, int idx) {
+    int x = GET_X(idx), y = GET_Y(idx);
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx, ny = y + dy;
+            if (!IS_VALID(nx, ny)) continue;
+            int n = GET_INDEX(nx, ny);
+            if (g->cand_refcount[n] > 0) g->cand_refcount[n]--;
+            if (g->board[n] == EMPTY && g->cand_refcount[n] == 0)
+                cand_remove(g, n);
+        }
+    }
+    // idx vient de devenir vide; si des pierres l'entourent, c'est un candidat
+    if (g->cand_refcount[idx] > 0) cand_add(g, idx);
+}
+
+// Reconstruit le candidate set depuis l'état courant du plateau.
+// À appeler après tout reset ou chargement de position externe.
+void cand_rebuild(game *g) {
+    memset(g->cand_refcount, 0, sizeof(g->cand_refcount));
+    memset(g->in_cand,       0, sizeof(g->in_cand));
+    g->cand_count  = 0;
+    g->stone_count = 0;
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] == EMPTY) continue;
+        g->stone_count++;
+        int x = GET_X(idx), y = GET_Y(idx);
+        for (int dy = -2; dy <= 2; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                if (dx == 0 && dy == 0) continue;
+                int nx = x + dx, ny = y + dy;
+                if (!IS_VALID(nx, ny)) continue;
+                g->cand_refcount[GET_INDEX(nx, ny)]++;
+            }
+        }
+    }
+    for (int idx = 0; idx < MAX_BOARD; idx++) {
+        if (g->board[idx] == EMPTY && g->cand_refcount[idx] > 0)
+            cand_add(g, idx);
+    }
+}
+
 /**
  * Applique un coup sur le plateau avec evaluation incrementale.
  * 
@@ -28,6 +113,8 @@ void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     // 3. POSER LA PIERRE
     g->board[idx] = player;
     g->current_hash ^= zobrist_table[idx][player];
+    cand_on_place(g, idx);   // O(25) : mise à jour candidats
+    g->stone_count++;
 
     // 4. AJOUTER LE NOUVEL ÉTAT (Positionnel pierre posée)
     // On ajoute les nouveaux scores créés par cette pierre
@@ -69,6 +156,8 @@ void apply_move(game *g, int idx, int player, MoveUndo *undo) {
         g->board[captured_indices[i]] = EMPTY;   // On l'enlève pour de bon
         
         update_impacted_scores(g, cx, cy, false); // Ajouter score du vide (nouvelles ouvertures potentielles)
+        cand_on_remove(g, captured_indices[i]);   // O(25) : la case redevient candidate
+        g->stone_count--;
         
         // Hash update (Capture)
         g->current_hash ^= zobrist_table[captured_indices[i]][opponent];
@@ -99,6 +188,8 @@ void undo_move(game *g, int player, MoveUndo *undo) {
             // On remet la pierre adverse
             g->board[c_idx] = opponent;
             g->current_hash ^= zobrist_table[c_idx][opponent];
+            cand_on_place(g, c_idx);   // O(25)
+            g->stone_count++;
 
             // On rajoute son score restauré
             update_impacted_scores(g, cx, cy, false);
@@ -113,6 +204,8 @@ void undo_move(game *g, int player, MoveUndo *undo) {
 
     g->board[idx] = EMPTY;
     g->current_hash ^= zobrist_table[idx][player];
+    cand_on_remove(g, idx);   // O(25)
+    g->stone_count--;
 
     // 3. RESTAURER L'ÉTAT DU VIDE
     // On remet les scores tels qu'ils étaient quand c'était vide

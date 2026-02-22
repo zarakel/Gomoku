@@ -31,9 +31,12 @@ bool is_winning_threat(game *g, int idx, int opponent) {
     if (score >= WIN_SCORE) return true;
     
     // 2. Victoire par capture (si règle active)
-    if (g->captures[opponent] >= 4) {
+    // Seuil abaissé à >= 3 : si P1 a 3 captures et peut capturer 2 paires en 1 coup
+    // (4 pierres, caps/2 = 2), il atteint 5 → victoire.  Avec >= 4, ce cas était
+    // invisible → is_winning_threat retournait false → défense jamais déclenchée.
+    if (g->captures[opponent] >= 3) {
         int caps = count_potential_captures(g, GET_X(idx), GET_Y(idx), opponent);
-        if (g->captures[opponent] + (caps / 2) >= 5) return true; // (caps/2 car count retourne le nombre de pierres)
+        if (g->captures[opponent] + (caps / 2) >= 5) return true;
     }
     
     return false;
@@ -86,6 +89,19 @@ static int count_immediate_threats(game *g, int opponent, int *threat_moves) {
             if (score >= OPEN_FOUR) {
                 if (count < 10) {
                     threat_moves[count++] = idx;
+                }
+                continue; // Déjà compté, pas besoin de checker captures
+            }
+
+            // Menace de capture : si adversaire a >= 3 paires et ce coup
+            // crée une capture (l'amenant à 4+), c'est une menace sérieuse
+            // qu'il faut inclure dans crisis_moves pour blocage préventif.
+            if (g->captures[opponent] >= 3) {
+                int caps = count_potential_captures(g, x, y, opponent);
+                if (caps >= 2 && g->captures[opponent] + (caps / 2) >= 4) {
+                    if (count < 10) {
+                        threat_moves[count++] = idx;
+                    }
                 }
             }
         }
@@ -195,14 +211,18 @@ void update_crisis_state(game *g, int ia_player) {
         }
     }
     
-    // 4. Check captures (Code existant inchangé...)
-    if (g->captures[opponent] >= 4) {
+    // 4. Check captures préventif
+    // Déclenche dès >= 3 paires capturées : si l'adversaire peut atteindre 4+
+    // en 1 coup sur des paires vulnérables, c'est une menace critique.
+    // Avant : seuil à >= 4 → la crise ne se déclenchait qu'au bord du gouffre.
+    if (g->captures[opponent] >= 3) {
         int vulnerable = count_vulnerable_pairs(g, ia_player);
         if (vulnerable > 0) {
             g->in_crisis = true;
-            g->crisis_level = 2;
+            g->crisis_level = (g->captures[opponent] >= 4) ? 3 : 2;
             #ifdef DEBUG
-            printf(">>> CRISE NIVEAU 2 : Adversaire à 4 captures\n");
+            printf(">>> CRISE NIVEAU %d : Adversaire à %d captures, %d paires vulnérables\n",
+                   g->crisis_level, g->captures[opponent], vulnerable);
             #endif
             return;
         }
