@@ -179,6 +179,16 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
                 MoveUndo undo_def;
                 apply_move(g, def_idx, defender, &undo_def);
                 
+                // SOUNDNESS CHECK : si la réponse du défenseur a créé une menace
+                // OPEN_FOUR ou WIN pour lui, l'attaquant devrait bloquer au lieu de
+                // continuer le VCF → cette branche VCF est invalide.
+                if (g->max_threat_level[defender] >= IDX_OPEN_FOUR
+                    || evaluate_board(g, defender) >= WIN_SCORE) {
+                    undo_move(g, defender, &undo_def);
+                    defender_survives = true;
+                    break;
+                }
+                
                 // Appel Récursif : Est-ce que l'attaquant gagne ENCORE après cette défense ?
                 bool still_losing = vcf_search(g, attacker, depth + 1, start_time);
                 

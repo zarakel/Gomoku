@@ -94,7 +94,11 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         // Les terminaux stricts retournent ±WIN_SCORE exactement.
         // Les positions non-terminales sont plafonnees a ±(WIN_SCORE-1001) :
         // inutile de chercher plus profond si le score a atteint ce cap.
-        if (score >= WIN_SCORE - 1001 || score <= -(WIN_SCORE - 1001)) break;
+        // IMPORTANT : on n'accepte un quasi-terminal qu'à partir de depth 4.
+        // Un quasi-terminal à depth 2 est souvent un faux positif (P1 peut
+        // contrer en 2 coups ce que depth 2 ne voit pas). Exiger depth >= 4
+        // garantit que P1 a eu au moins 2 tours pour répondre dans la simulation.
+        if (depth >= 4 && (score >= WIN_SCORE - 1001 || score <= -(WIN_SCORE - 1001))) break;
         // Laisser le timeout naturel gerer la limite de temps (90% du budget).
         if ((double)(clock() - start) / CLOCKS_PER_SEC > allocated_time * 0.90) break;
     }
@@ -203,12 +207,18 @@ void makeIaMove(game *gameData, screen *windows) {
     // Priorite 2 : Minimax avec approfondissement iteratif (evaluation complete)
     if (!forcing_found) {
         // VCF est purement offensif : il ne voit pas les victoires adverses.
-        // Si l'adversaire peut gagner EN 1 COUP (crisis_immediate_win), lancer VCF
-        // serait suicidaire : on trouve un gain offensif pendant que l'adversaire gagne.
-        // Minimax trouve le blocage trivialement à depth=2 (SORT_BLOCK_WIN+10M = idx 0).
-        // Note: threat_counts[IDX_WIN] = 5-en-ligne existant = toujours 0 en partie live.
-        // Le vrai signal est crisis_immediate_win, posé par update_crisis_state.
-        int vcf_move = !gameData->crisis_immediate_win ? find_winning_vcf(gameData, ia_player) : -1;
+        // Bloqué dans 3 cas :
+        // 1. crisis_immediate_win : adversaire gagne en 1 coup (alignement ou 5e capture)
+        // 2. captures[opponent] >= 3 : 2 paires de plus = victoire par capture. VCF
+        //    expose souvent des paires → suicidaire. Minimax gèrera défense + attaque.
+        // 3. crisis_level >= 2 : adversaire a un Open Four ou un coup gagnant. Même si
+        //    le danger immédiat vient d'être bloqué le tour dernier, le niveau de crise
+        //    actuel indique que l'adversaire reconstruit rapidement. VCF masquerait des
+        //    tours défensifs critiques.
+        bool vcf_blocked = gameData->crisis_immediate_win
+                        || (gameData->captures[opponent] >= 3)
+                        || (gameData->in_crisis && gameData->crisis_level >= 2);
+        int vcf_move = !vcf_blocked ? find_winning_vcf(gameData, ia_player) : -1;
         if (vcf_move != -1 && !is_double_three(gameData, vcf_move, ia_player)) {
             best_move = vcf_move; reason = "VCF Gagnant";
         } else {

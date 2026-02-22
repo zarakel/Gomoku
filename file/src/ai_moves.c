@@ -72,19 +72,29 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     if (atk_score >= OPEN_FOUR) return SORT_THREAT_MAX + 5000000; // Boost massif
     
     // Niveau 2.5a : BLOCAGE FOURCHETTE ADVERSE (avant tout OPEN_THREE)
-    // Si P1 peut jouer ici pour créer 2 menaces simultanées (open+closed three),
-    // bloquer MAINTENANT est plus urgent que créer notre propre open_three.
-    // Raison : si P1 forke, la malus 4b (-10M) est pire que perdre 1 tour offensif.
-    int opp_fork_value = compute_fork_value(g, idx, opponent);
+    // Guard ÉLARGI : on calcule compute_fork_value si :
+    // - def_score >= CLOSED_THREE (menace locale forte), OU
+    // - l'adversaire a déjà ≥2 OPEN_TWO sur le plateau (convergence globale détectée).
+    //   Un OPEN_TWO seul = 4000 < CLOSED_THREE = 50000, donc le guard local manquait
+    //   les fourches construites depuis 2 groupes OPEN_TWO séparés en directions distinctes.
+    //   En élargissant au contexte global, on détecte P1 qui construit silencieusement
+    //   une double convergence (pattern responsable de la plupart des pertes en milieu de jeu).
+    int opp_fork_value = 0;
+    if (def_score >= CLOSED_THREE || g->threat_counts[opponent][IDX_OPEN_TWO] >= 2) {
+        opp_fork_value = compute_fork_value(g, idx, opponent);
+    }
     if (opp_fork_value > 0) {
-        return SORT_THREAT_MAX + 1000000; // Au-dessus de notre propre OPEN_THREE
+        return SORT_THREAT_MAX + 1000000;
     }
 
     // Niveau 2.5b : DOUBLE-FORK OFFENSIF
-    // Priorité augmentée au-dessus de OPEN_THREE simple.
-    int fork_value = compute_fork_value(g, idx, player);
+    // Guard cheap : idem, exige au moins CLOSED_THREE dans notre direction.
+    int fork_value = 0;
+    if (atk_score >= CLOSED_THREE) {
+        fork_value = compute_fork_value(g, idx, player);
+    }
     if (fork_value > 0) {
-        return SORT_THREAT_MAX + 3000000; // Au-dessus de OPEN_THREE et blocage fourche
+        return SORT_THREAT_MAX + 3000000;
     }
     
     // OPEN_THREE offensif
