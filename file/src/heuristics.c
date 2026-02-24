@@ -893,6 +893,10 @@ int check_free_three_pattern(game *g, int x, int y, int dx, int dy, int player) 
 }
 
 bool is_double_three(game *g, int idx, int player) {
+    // Seul P1 (Noir) est soumis à la règle du double-three (Renju).
+    // P2 n'a aucune restriction → retour immédiat O(1) pour éviter
+    // 4×evaluate_line inutiles dans les noeuds quiescence P2.
+    if (player != P1) return false;
 
     int x = GET_X(idx);
     int y = GET_Y(idx);

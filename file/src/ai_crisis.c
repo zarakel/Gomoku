@@ -131,14 +131,19 @@ void update_crisis_state(game *g, int ia_player) {
     g->crisis_move_count = 0;
     
     // 1. VICTOIRE IMMÉDIATE ADVERSE (Urgence absolue)
+    // threat_counts[IDX_WIN] est maintenu en O(1) par apply_move/undo_move.
+    // L'ancien scan porte sur 361 cases × get_point_score (64+ ops) = 23K ops/tour.
+    // On localise les coups gagnants UNIQUEMENT si threat_counts > 0 (rare).
     int winning_moves = 0;
-    
-    // Optimisation : Scanner uniquement les cases autour des pierres existantes ?
-    // Pour la sûreté, on scanne tout le board ici (c'est rapide, juste un check)
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] == EMPTY && is_winning_threat(g, i, opponent)) {
-            g->crisis_moves[winning_moves++] = i;
-            if (winning_moves >= 10) break;
+
+    if (g->threat_counts[opponent][IDX_WIN] > 0 || g->captures[opponent] >= 4) {
+        // Localiser les cases gagnantes : on itère sur cand_list (cases vides proches)
+        for (int ci = 0; ci < g->cand_count; ci++) {
+            int i = g->cand_list[ci];
+            if (is_winning_threat(g, i, opponent)) {
+                g->crisis_moves[winning_moves++] = i;
+                if (winning_moves >= 10) break;
+            }
         }
     }
     
@@ -172,29 +177,21 @@ void update_crisis_state(game *g, int ia_player) {
     int open_three_count = g->threat_counts[opponent][IDX_OPEN_THREE];
     
     if (open_three_count > 0) {
-        // On doit scanner le plateau pour TROUVER où sont ces Open 3
+        // Scanner via cand_list au lieu de 19×19 hardcodé.
+        // cand_list = cases vides avec au moins 1 voisin dist≤ 2 = exactement
+        // les cases où une menace peut être complétée.
         int count_found = 0;
-        
-        // Scan rapide pour localiser les menaces
-        // (On réutilise la logique de count_immediate_threats mais avec un seuil plus bas)
-        int min_x = 0, max_x = BOARD_SIZE - 1, min_y = 0, max_y = BOARD_SIZE - 1; // Optimiser si besoin
-        
-        for (int y = min_y; y <= max_y; y++) {
-            for (int x = min_x; x <= max_x; x++) {
-                int idx = GET_INDEX(x, y);
-                if (g->board[idx] != EMPTY) continue;
-                
-                g->board[idx] = opponent;
-                int score = get_point_score(g, x, y, opponent);
-                g->board[idx] = EMPTY;
-                
-                // Si ce coup crée un Open 4, c'est qu'il complète un Open 3 existant !
-                // C'est donc le point vital à bloquer.
-                if (score >= OPEN_FOUR) {
-                    if (count_found < 10) {
-                        g->crisis_moves[count_found++] = idx;
-                    }
-                }
+
+        for (int ci = 0; ci < g->cand_count; ci++) {
+            int idx = g->cand_list[ci];
+
+            g->board[idx] = opponent;
+            int score = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
+            g->board[idx] = EMPTY;
+
+            if (score >= OPEN_FOUR) {
+                if (count_found < 10)
+                    g->crisis_moves[count_found++] = idx;
             }
         }
         
@@ -358,20 +355,25 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
         MoveUndo undo;
         apply_move(g, idx, ia_player, &undo);
         
-        // CHECK 1 : Est-ce que l'adversaire a ENCORE un coup gagnant immédiat (5 alignés) ?
-        for (int k = 0; k < MAX_BOARD; k++) {
-            // Optimisation : On pourrait scanner seulement les cases vides voisines des pierres adverses
-            if (g->board[k] == EMPTY) {
-                if (is_winning_threat(g, k, opponent)) {
-                    is_safe = false;
-                    #ifdef DEBUG
-                    if (i==0) printf("    ❌ Refus (%d,%d) : L'adversaire gagne encore en (%d,%d)\n", 
-                                     GET_X(idx), GET_Y(idx), GET_X(k), GET_Y(k));
-                    #endif
-                    break;
+    // CHECK 1 : Est-ce que l'adversaire a ENCORE un coup gagnant immédiat ?
+                // threat_counts[IDX_WIN] est mis à jour par apply_move (O(1)).
+                // Localiser les coups gagnants via cand_list (voisins des pierres)
+                // au lieu de scanner les 361 cases.
+                bool still_wins = false;
+                if (g->threat_counts[opponent][IDX_WIN] > 0 || g->captures[opponent] >= 4) {
+                    for (int ci = 0; ci < g->cand_count; ci++) {
+                        int k = g->cand_list[ci];
+                        if (is_winning_threat(g, k, opponent)) {
+                            still_wins = true;
+                            #ifdef DEBUG
+                            if (i==0) printf("    \u274c Refus (%d,%d) : L'adversaire gagne encore en (%d,%d)\n",
+                                             GET_X(idx), GET_Y(idx), GET_X(k), GET_Y(k));
+                            #endif
+                            break;
+                        }
+                    }
                 }
-            }
-        }
+                is_safe = !still_wins;
         
         undo_move(g, ia_player, &undo);
         

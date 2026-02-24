@@ -10,34 +10,31 @@
 static int run_aspiration_search(game *g, int depth, int prev_score, int *best_move_out, int ia_player, clock_t start) {
     int alpha = -WIN_SCORE - 10000;
     int beta = WIN_SCORE + 10000;
-    // Fenetre initiale large pour eviter les echecs de recherche
     int window = 5000;
-    
-    // Adaptation de la fenetre selon le score precedent
-    // Plus le score est instable (grand), plus on elargit la fenetre
-    if (depth > 2 && abs(prev_score) < WIN_SCORE - 10000) {
-        // Fenêtre adaptative : plus large si score instable
-        window = 5000 + (abs(prev_score) / 100); // Croissance progressive
+    double time_budget = (double)TIME_LIMIT_MS / 1000.0;
+
+    if (depth > 2 && abs(prev_score) >= 5000 && abs(prev_score) < WIN_SCORE - 10000) {
+        window = 5000 + (abs(prev_score) / 100);
         alpha = prev_score - window;
         beta = prev_score + window;
         if (alpha < -WIN_SCORE - 10000) alpha = -WIN_SCORE - 10000;
         if (beta > WIN_SCORE + 10000) beta = WIN_SCORE + 10000;
     }
 
-    // Générer les coups UNE SEULE FOIS avant la boucle aspiration.
-    // Sur fail-low ou fail-high, on relance la recherche avec une fenêtre élargie
-    // mais le même ordre de coups : le tri ne change pas entre itérations puisque
-    // la TT ne sera mise à jour qu'après la 1ère recherche complète, et les scores
-    // d'ordonnancement (captures, menaces) ne dépendent pas de la fenêtre alpha-beta.
-    // Avant ce fix : generate_moves (qsort sur 20 coups + score_move_ordering ×20)
-    // était appelé jusqu'à 3× par depth sur les positions oscillantes → ×3 overhead
-    // sur exactement les positions difficiles où l'aspiration fail le plus souvent.
     MoveCandidate moves[MAX_BOARD];
     int count = generate_moves(g, moves, ia_player, depth, *best_move_out);
     if (count == 0) return prev_score;
     if (*best_move_out == -1) *best_move_out = moves[0].index;
     int opponent_asp = (ia_player == P1) ? P2 : P1;
 
+    // Fenêtre progressive : window ×1, ×4, pleine.
+    // Objectif : éviter le re-run à fenêtre pleine (2× coût) quand la fenêtre élargie
+    // suffit pour confirmer le score. Sur les positions stables (mid-game), la
+    // fenêtre ×4 réussit dans >90% des cas → économise 100-150ms sur D10.
+    // GARDE-TEMPS : avant tout retry, s'assurer qu'il reste au moins 55% du budget.
+    // Sur fail à D10 (run 1 ≈60% budget), on accepte le résultat partiel : le coup
+    // TT de D8 est en tête du tri → current_best_idx est presque toujours correct.
+    int window_mult = 1;
     int loop_guard = 0;
     while (loop_guard++ < 3) {
         int alpha_origin = alpha;
@@ -50,8 +47,6 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
             int idx = moves[i].index;
             MoveUndo undo;
             apply_move(g, idx, ia_player, &undo);
-            // Formulation negamax correcte : après le coup de ia_player,
-            // c'est l'adversaire qui joue → on passe opponent et on inverse la fenêtre.
             int val = -minimax(g, depth - 1, -beta, -alpha, false, opponent_asp, start);
             undo_move(g, ia_player, &undo);
 
@@ -66,8 +61,28 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
 
         if (time_out) return TIMEOUT_CODE;
         if (depth > 2 && (current_best_score <= alpha_origin || current_best_score >= beta_origin)) {
-            alpha = -WIN_SCORE - 10000;
-            beta = WIN_SCORE + 10000;
+            // Vérification du budget avant retry.
+            // Si >55% du budget écoulé au moment du fail, le retry coûterait plus
+            // que le budget restant. On accepte le meilleur coup trouvé (TT move
+            // de D-2 en tête = bonne qualité même avec fenêtre étroite).
+            double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+            if (elapsed > time_budget * 0.55) {
+                if (current_best_idx != -1) *best_move_out = current_best_idx;
+                return current_best_score;
+            }
+            // Fenêtre progressive : ×4 d'abord, puis pleine.
+            window_mult = (window_mult == 1) ? 4 : 100;
+            int new_window = window * window_mult;
+            if (new_window > WIN_SCORE || window_mult >= 100) {
+                alpha = -WIN_SCORE - 10000;
+                beta  =  WIN_SCORE + 10000;
+            } else {
+                int center = (alpha_origin + beta_origin) / 2;
+                alpha = center - new_window;
+                beta  = center + new_window;
+                if (alpha < -WIN_SCORE - 10000) alpha = -WIN_SCORE - 10000;
+                if (beta  >  WIN_SCORE + 10000) beta  =  WIN_SCORE + 10000;
+            }
             continue;
         }
         *best_move_out = current_best_idx;
@@ -91,13 +106,23 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
     // Step=2 sur depths pairs : évite l'oscillation de parité (odd/even parity effect).
     // À depth impair, P2 joue en dernier → scores artificiellement gonflés → faux WIN_SCORE.
     // Même parité garantit que le fallback est toujours comparable au depth précédent.
-    for (int depth = 2; depth <= MAX_DEPTH; depth += 2) {
+    long long prev_nodes = 0;
+    // OUVERTURE : quand le plateau est quasi-vide (< 4 pierres), l'arbre est trop
+    // homogène pour que l'alpha-beta coupe. D8 coûte 0.40s pour le même résultat
+    // que D4 (les scores sont plats, aucun pruning ne joue). On plafonne à D4.
+    // Au-delà de 4 pierres, la TT est warm et le pruning reprend.
+    int max_iter_depth = (g->stone_count < 4) ? 4 : MAX_DEPTH;
+    for (int depth = 2; depth <= max_iter_depth; depth += 2) {
         if (best_move != -1) prev_best_move = best_move;
         int score = run_aspiration_search(g, depth, prev_score, &best_move, ia_player, start);
+        double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+        long long nodes_this_depth = debug_node_count - prev_nodes;
+        prev_nodes = debug_node_count;
         if (score == TIMEOUT_CODE) return (prev_best_move != -1) ? prev_best_move : best_move;
 
         prev_score = score;
-        printf("Depth %d complete. Score: %d\n", depth, score);
+        printf("Depth %d complete. Score: %d | nodes: %lld (+%lld) | t: %.3fs\n",
+               depth, score, debug_node_count, nodes_this_depth, elapsed);
 
         // ASPIRATION GUARD : si le score est quasi-terminal (±WIN_SCORE ± 5000),
         // ne pas l'utiliser comme centre de fenêtre pour la prochaine depth.

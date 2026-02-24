@@ -1,7 +1,5 @@
 #include "../include/gomoku.h"
 
-// ---------------------------------------------------------------------------
-// CANDIDATE SET - Helpers internes
 //
 // cand_refcount[n] = nombre de pierres (toute couleur) dans dist≤2 de n.
 // Une case est candidate ssi board[n]==EMPTY && cand_refcount[n]>0.

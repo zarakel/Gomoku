@@ -16,7 +16,7 @@
  */
 
 #define VCF_MAX_DEPTH 30
-#define VCF_TIME_LIMIT 0.030 // 30ms max pour le VCF : laisse ~370ms a minimax
+#define VCF_TIME_LIMIT 0.015 // 15ms max pour le VCF : laisse ~385ms a minimax
 
 // Cache global pour eviter de recalculer les memes positions
 static int vcf_cache[MAX_BOARD];      // -1 = non teste, 0 = echec, 1 = succes
@@ -35,43 +35,27 @@ static uint64_t vcf_cache_hash = 0;   // Hash de la position en cache
  */
 static int generate_attacking_moves(game *g, int player, MoveVCF *moves) {
     int count = 0;
-    int opponent = (player == P1) ? P2 : P1;
-    
-    // OPTIMISATION VCF : Génération légère sans appeler generate_moves
-    // Scanner uniquement les cases proches des pierres existantes
-    
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
-        
+
+    // Utiliser cand_list : cases EMPTY avec au moins 1 voisin dist≤2.
+    // Remplace le scan 361 + double boucle has_neighbor 5×5 (9025 ops).
+    for (int ci = 0; ci < g->cand_count; ci++) {
+        int idx = g->cand_list[ci];
         int x = GET_X(idx), y = GET_Y(idx);
-        
-        // Filtre rapide : case doit avoir au moins un voisin dans rayon 2
-        bool has_neighbor = false;
-        for (int dy = -2; dy <= 2 && !has_neighbor; dy++) {
-            for (int dx = -2; dx <= 2; dx++) {
-                int nx = x + dx, ny = y + dy;
-                if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] != EMPTY) {
-                    has_neighbor = true;
-                    break;
-                }
-            }
-        }
-        if (!has_neighbor) continue;
-        
+
         // Vérifier règle double-three
         if (is_double_three(g, idx, player)) continue;
 
         // Simulation légère avec évaluation RAPIDE
         g->board[idx] = player;
-        int score = get_point_score_fast(g, x, y, player); // FAST au lieu de normal
+        int score = get_point_score_fast(g, x, y, player);
         g->board[idx] = EMPTY;
 
-        // Coup forçant : OPEN_THREE ou mieux (réduit le seuil)
-        if (score >= OPEN_THREE) { 
+        // Coup forçant : OPEN_THREE ou mieux
+        if (score >= OPEN_THREE) {
             moves[count].move_idx = idx;
             moves[count].score = score;
             count++;
-            if (count >= 30) break; // Limite pour éviter explosion
+            if (count >= 30) break;
         }
     }
     return count;
@@ -182,11 +166,20 @@ bool vcf_search(game *g, int attacker, int depth, clock_t start_time) {
                 MoveUndo undo_def;
                 apply_move(g, def_idx, defender, &undo_def);
                 
-                // SOUNDNESS CHECK : si la réponse du défenseur a créé une menace
-                // OPEN_FOUR ou WIN pour lui, l'attaquant devrait bloquer au lieu de
-                // continuer le VCF → cette branche VCF est invalide.
+                // SOUNDNESS CHECK : si la réponse du défenseur crée une menace
+                // imparable ou une position quasi-terminale gagnante pour lui,
+                // l'attaquant devrait bloquer au lieu de continuer le VCF.
+                //
+                // Anciennement >= WIN_SCORE uniquement : manquait les quasi-terminaux
+                // retournés par evaluate_board :
+                //   WIN_SCORE - 1001 = double Open Four  (capturé par max_threat_level)
+                //   WIN_SCORE - 2001 = double Closed Four → victoire en 1-2 coups
+                //   WIN_SCORE - 3001 = 4 captures adverses → 1 capture de plus = victoire
+                // Ces positions sont des victoires quasi-certaines ; accepter le VCF
+                // malgré elles produisait des séquences invalides (parties perdues G3).
+                // Seuil WIN_SCORE - 5000 couvre les 3 cas ci-dessus avec marge.
                 if (g->max_threat_level[defender] >= IDX_OPEN_FOUR
-                    || evaluate_board(g, defender) >= WIN_SCORE) {
+                    || evaluate_board(g, defender) >= WIN_SCORE - 5000) {
                     undo_move(g, defender, &undo_def);
                     defender_survives = true;
                     break;
@@ -555,6 +548,17 @@ int find_winning_vcf(game *g, int attacker) {
         g->threat_counts[defender][IDX_CLOSED_FOUR] >= 1) {
         #ifdef DEBUG
         printf(">>> VCF abandonné : adversaire en pré-fourchette (open3+closed4)\n");
+        #endif
+        return -1;
+    }
+
+    // Si l'adversaire a 4 captures (= 1 capture de plus = victoire), ne pas lancer
+    // de VCF : chaque coup de la séquence qui crée une paire capturable lui donne gain.
+    // Le soundness check intérieur rattrape le cas isolé, mais le VCF entier n'a
+    // aucune chance d'être valide dans ce contexte (l'adversaire a toujours l'option capture).
+    if (g->captures[defender] >= 4) {
+        #ifdef DEBUG
+        printf(">>> VCF abandonné : adversaire à 4 captures (quasi-victoire)\n");
         #endif
         return -1;
     }

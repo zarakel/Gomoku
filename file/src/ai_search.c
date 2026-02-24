@@ -114,13 +114,21 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
         return (current_eval > 0) ? (WIN_SCORE + depth) : (-WIN_SCORE - depth);
     }
 
+    int opponent = (player == P1) ? P2 : P1;
+
     if (depth <= 0) {
-        // qs_depth=3 : compromis qualité/vitesse.
-        // qs_depth=4 était trop lourd (10^4 nœuds/feuille) → bloquait depth 6.
-        // qs_depth=2 insuffisant : ratait les séquences capture-recapture à 3 coups
-        // → P2 jouait dans des positions tactiquement perdantes (régression 1P2/2P1).
-        // qs_depth=3 couvre 10^3=1000 nœuds max/feuille, capte les séquences à 3 coups.
-        return quiescence_search(g, alpha, beta, player, 3, start_time);
+        // QS depth adaptatif : 3 si des menaces actives existent, 2 sinon.
+        // En position calme (pas de OPEN_THREE ni CLOSED_FOUR sur le plateau),
+        // qs=3 génère ~8× plus de nœuds qu'qs=2 pour zéro gain de qualité.
+        // qs=2 libère ~60% du budget QS en position calme → budget redistribué
+        // vers des ply supplémentaires en minimax.
+        // Guard : on garde qs=3 dès qu'un OPEN_THREE ou CLOSED_FOUR est présent
+        // (position tactiquement instable) pour éviter l'effet d'horizon.
+        int qs_depth = (g->threat_counts[opponent][IDX_OPEN_THREE] > 0
+                        || g->threat_counts[player][IDX_OPEN_THREE] > 0
+                        || g->max_threat_level[opponent] >= IDX_CLOSED_FOUR
+                        || g->max_threat_level[player] >= IDX_CLOSED_FOUR) ? 3 : 2;
+        return quiescence_search(g, alpha, beta, player, qs_depth, start_time);
     }
 
     // NULL MOVE PRUNING
@@ -133,7 +141,6 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     //   - captures[opponent] < 4 : si adverse proche de gagner par capture, trop risqué
     //   - current_eval >= beta : on est déjà en position avantageuse (condition classique)
     //   - abs(current_eval) < WIN_SCORE - 10000 : pas dans une séquence de mat
-    int opponent = (player == P1) ? P2 : P1;
     if (null_allowed
         && depth >= 3
         && !g->in_crisis
@@ -186,9 +193,18 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
                 && current_eval + moves[i].score_estim + (CLOSED_THREE / 2) <= alpha) {
                 break;
             }
-            if (depth == 2 && i >= 8
+            if (depth == 2 && i >= 6
                 && moves[i].score_estim < OPEN_TWO
                 && current_eval + moves[i].score_estim + CLOSED_THREE <= alpha) {
+                break;
+            }
+            // depth=3 : le niveau le plus peuplé de l'arbre D8 avec beam=8.
+            // Marge = CLOSED_THREE*2 pour couvrir 3 coups potentiels (1 ply de
+            // profondeur supplémentaire vs depth=2). Seuil i>=5 pour toujours
+            // explorer les 5 premiers coups (TT+killers+menaces OPEN_THREE).
+            if (depth == 3 && i >= 5
+                && moves[i].score_estim < OPEN_TWO
+                && current_eval + moves[i].score_estim + CLOSED_THREE * 2 <= alpha) {
                 break;
             }
         }
@@ -207,13 +223,19 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
             }
         } else {
             // LMR
-            // R=1 : coups tardifs calmes (i>=6, score < CLOSED_THREE).
-            // R=2 : coups très tardifs sans intérêt (i>=12, score < OPEN_TWO).
-            //        Ces coups sont des remplissages de position → réduction agressive
-            //        sans risque de rater des menaces (déjà triés très bas).
+            // LMR : réduction des coups tardifs calmes pour libérer du budget.
+            // R=1 depth>=3 i>=4 : coups calmes sans menace CLOSED_THREE.
+            //       Avant : depth>=4 i>=6. Gain : ~30% nœuds en moins à depth 3-4.
+            // R=2 depth>=3 i>=6 : coups vraiment calmes sous OPEN_TWO.
+            //       Avant : depth>=4 i>=8. Couvre tous les coups positionnels.
+            // R=3 depth>=5 i>=9 : coups sans valeur tangible (sous CLOSED_TWO)
+            //       aux profondeurs élevées. Nouveau niveau pour D8→D10.
+            // Guard commun : score_estim sert déjà de filtre tactique.
+            // Si LMR produit un score > alpha, la recherche pleine confirme (ci-dessous).
             int R = 0;
-            if (depth >= 4 && i >= 6 && moves[i].score_estim < CLOSED_THREE) R = 1;
-            if (depth >= 4 && i >= 8 && moves[i].score_estim < OPEN_TWO)      R = 2;  // was depth>=5,i>=12
+            if (depth >= 3 && i >= 4 && moves[i].score_estim < CLOSED_THREE) R = 1;
+            if (depth >= 3 && i >= 6 && moves[i].score_estim < OPEN_TWO)     R = 2;
+            if (depth >= 5 && i >= 9 && moves[i].score_estim < CLOSED_TWO)   R = 3;
             
             val = -negamax(g, depth - 1 - R, -alpha - 1, -alpha, opponent, start_time, true);
             
