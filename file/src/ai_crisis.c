@@ -385,13 +385,46 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
         }
     }
     
-    // 5. BAROUD D'HONNEUR
-    // Si aucun coup ne nous sauve parfaitement, on joue le meilleur candidat heuristique
-    // (Peut-être que l'adversaire ne verra pas sa victoire)
+    // 5. BAROUD D'HONNEUR amélioré
+    // Aucun coup parfait trouvé : on ne joue plus le premier candidat aveuglément.
+    // Stratégie : parmi les top-8 candidats, choisir celui qui laisse le MOINS
+    // de coups gagnants immédiats à l'adversaire.
+    // → Si on ne peut pas gagner, on peut au moins rendre la victoire adverse plus difficile
+    //   (l'adversaire peut se tromper, surtout en partie rapide).
+    int best_desperate = candidates[0].idx;
+    int min_opp_wins = INT_MAX;
+    int desperate_limit = (cand_count < 8) ? cand_count : 8;
+
+    for (int i = 0; i < desperate_limit; i++) {
+        int idx = candidates[i].idx;
+        if (is_double_three(g, idx, ia_player)) continue;
+
+        MoveUndo undo;
+        apply_move(g, idx, ia_player, &undo);
+
+        // Compter les réponses gagnantes immédiates de l'adversaire
+        int opp_wins = 0;
+        for (int ci = 0; ci < g->cand_count; ci++) {
+            int k = g->cand_list[ci];
+            if (is_winning_threat(g, k, opponent)) {
+                opp_wins++;
+                if (opp_wins >= min_opp_wins) break; // Pas mieux, arrêt prématuré
+            }
+        }
+
+        undo_move(g, ia_player, &undo);
+
+        if (opp_wins < min_opp_wins) {
+            min_opp_wins = opp_wins;
+            best_desperate = idx;
+            if (opp_wins == 0) break; // Trouvé un coup sans réponse gagnante
+        }
+    }
+
     #ifdef DEBUG
-    printf("    ⚠️ ECHEC DÉFENSE PARFAITE. Tentative désespérée en (%d,%d)\n", 
-           GET_X(candidates[0].idx), GET_Y(candidates[0].idx));
+    printf("    ⚠️ ECHEC DÉFENSE PARFAITE. Desperate→(%d,%d) (opp_wins_restants=%d)\n",
+           GET_X(best_desperate), GET_Y(best_desperate), min_opp_wins);
     #endif
-    
-    return candidates[0].idx;
+
+    return best_desperate;
 }

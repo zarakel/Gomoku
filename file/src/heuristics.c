@@ -85,6 +85,9 @@ int get_threat_level(int score) {
     return IDX_OTHERS;
 }
 
+/* Forward declaration : update_stats est statique et définie plus bas */
+static void update_stats(game *g, int player, int score, bool remove_mode);
+
 /**
  * Recalcule completement les statistiques du plateau.
  * 
@@ -102,13 +105,42 @@ void refresh_board_stats(game *g) {
     memset(g->threat_counts, 0, sizeof(g->threat_counts));
     memset(g->max_threat_level, 0, sizeof(g->max_threat_level));
 
-    // 2. Scan complet du plateau
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] == EMPTY) continue;
-        
-        // On simule l'ajout de la pierre pour déclencher les mises à jour
-        // Note: update_impacted_scores ajoute le score, donc c'est parfait.
-        update_impacted_scores(g, GET_X(i), GET_Y(i), false); // false = ADD
+    // 2. Scan correct : pour chaque direction, on trouve les TÊTES de lignes
+    // uniques et on évalue chacune UNE SEULE FOIS.
+    //
+    // BUG CORRIGÉ : l'ancienne version appelait update_impacted_scores() pour
+    // chaque pierre, ce qui réévaluait la même tête de ligne autant de fois
+    // qu'il y a de pierres dans son rayon d'impact (k=-5..0).
+    // Exemple : 3 pierres consécutives P1 → la ligne de tête était comptée 3×
+    // dans threat_counts, provoquant des faux positifs WIN_SCORE (Score: 2000000X)
+    // alors que la position n'était pas terminale.
+    //
+    // Correction : on itère par direction, on ne traite que les starts
+    // (case précédente vide/hors-plateau) → chaque ligne est comptée exactement 1×.
+    int dirs[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
+
+    for (int d = 0; d < 4; d++) {
+        int dx = dirs[d][0];
+        int dy = dirs[d][1];
+
+        for (int i = 0; i < MAX_BOARD; i++) {
+            int p = g->board[i];
+            if (p == EMPTY) continue;
+
+            int x = GET_X(i);
+            int y = GET_Y(i);
+
+            // Ne traiter que le début d'une séquence pour ce joueur dans cette direction
+            int prev_x = x - dx;
+            int prev_y = y - dy;
+            bool is_start = !IS_VALID(prev_x, prev_y)
+                            || g->board[GET_INDEX(prev_x, prev_y)] != p;
+
+            if (is_start) {
+                int score = evaluate_line(g, x, y, dx, dy, p);
+                update_stats(g, p, score, false); // ADD — exactement 1× par ligne
+            }
+        }
     }
 }
 /**
@@ -300,6 +332,9 @@ int find_gapped_three_hole(game *g, int player) {
     return -1;
 }
 
+/* Forward declaration : définie après evaluate_line */
+static int evaluate_full_line(game *g, int x, int y, int dx, int dy, int player);
+
 /*
  * Détecte si un coup crée une fourchette (plusieurs menaces simultanées)
  * Un bonus est accordé si le coup appartient à plusieurs lignes prometteuses.
@@ -311,7 +346,9 @@ int compute_fork_bonus(game *g, int x, int y, int player) {
     int bonus = 0;
 
     for (int d = 0; d < 4; d++) {
-        int score = evaluate_line(g, x, y, dx[d], dy[d], player);
+        // evaluate_full_line : bidirectionnel — détecte les forks où le coup est
+        // au centre (ex: X * X en diagonal), que evaluate_line (unidirectionnel) ratait.
+        int score = evaluate_full_line(g, x, y, dx[d], dy[d], player);
         
         // On compte les menaces créées ou complétées par ce coup
         if (score >= OPEN_TWO) {
@@ -330,31 +367,6 @@ int compute_fork_bonus(game *g, int x, int y, int player) {
     return bonus;
 }
 
-// On veut que l'IA privilégie les cases qui appartiennent à plusieurs lignes
-static int get_intersection_bonus(game *g, int x, int y, int player) {
-    int active_lines = 0;
-    int dx[] = {1, 0, 1, 1};
-    int dy[] = {0, 1, 1, -1};
-    
-    for (int d = 0; d < 4; d++) {
-        // Si la ligne dans cette direction a au moins une pierre du joueur
-        // et aucune pierre adverse, elle est "active".
-        int p_count = 0;
-        int o_count = 0;
-        int opponent = (player == P1) ? P2 : P1;
-        
-        for (int k = -4; k <= 4; k++) {
-            int nx = x + dx[d] * k;
-            int ny = y + dy[d] * k;
-            if (IS_VALID(nx, ny)) {
-                if (g->board[GET_INDEX(nx, ny)] == player) p_count++;
-                else if (g->board[GET_INDEX(nx, ny)] == opponent) o_count++;
-            }
-        }
-        if (p_count > 0 && o_count == 0) active_lines++;
-    }
-    return (active_lines > 1) ? (active_lines * 500) : 0;
-}
 
 int evaluate_line(game *g, int x, int y, int dx, int dy, int player) {
     int score = 0;
@@ -453,12 +465,22 @@ int get_point_score(game *g, int x, int y, int player) {
     // 2. BONUS DE FOURCHETTE (Intersection)
     total += compute_fork_bonus(g, x, y, player);
 
-    // 3. AMÉLIORATION PHASE 5 : Rendre l'évaluation TRÈS AGRESSIVE
-    // Multiplier les menaces offensives par 1.5 pour favoriser l'attaque
-    if (max_line >= OPEN_THREE) {
-        total = (int)(total * 1.5); // Augmenté de 1.25 à 1.5
-    } else if (max_line >= CLOSED_THREE) {
-        total = (int)(total * 1.3); // Bonus même pour menaces moyennes
+    // 3. BONUS DE COMBINAISON DIRECTIONNELLE
+    // Remplace les multiplicateurs ×1.5/×1.3 qui gonflaient artificiellement les scores
+    // et causaient des faux positifs OPEN_FOUR dans count_immediate_threats (par ex:
+    // OPEN_THREE(2M) + CLOSED_FOUR(5M) = 7M × 1.5 = 10.5M ≥ OPEN_FOUR → faux positif).
+    // On remplace par un bonus explicite quand plusieurs directions sont actives :
+    // chaque direction ≥ OPEN_THREE en plus de la première ajoute OPEN_THREE/2 = 1M.
+    // Exemple : 2 OPEN_THREE = 4M + 1M = 5M (< OPEN_FOUR ✓). 1 OPEN_THREE + 1 CLOSED_FOUR
+    // → max_line=CLOSED_FOUR donc pas de combo → valeur brute 7M (< OPEN_FOUR ✓).
+    {
+        int open_three_dirs = 0;
+        for (int i = 0; i < 4; i++) {
+            if (d_scores[i] >= OPEN_THREE) open_three_dirs++;
+        }
+        if (open_three_dirs >= 2) {
+            total += (open_three_dirs - 1) * (OPEN_THREE / 2); // +1M par direction supplémentaire
+        }
     }
 
     // 4. BONUS PROSPECTIF : Détecter les menaces latentes (simplifié)
@@ -538,53 +560,6 @@ int get_point_score_fast(game *g, int x, int y, int player) {
 }
 
 // Helper pour recalculer les scores globaux ET repérer la menace maximale unique
-static void recalculate_scores(game *g, int *score_p1, int *score_p2, int *max_threat_p1, int *max_threat_p2) {
-    *score_p1 = 0; *score_p2 = 0;
-    *max_threat_p1 = 0; *max_threat_p2 = 0;
-    
-    for (int y = 0; y < BOARD_SIZE; y++) {
-        for (int x = 0; x < BOARD_SIZE; x++) {
-            int idx = GET_INDEX(x, y);
-            int player = g->board[idx];
-            
-            if (player == EMPTY) continue;
-
-            int *target_score = (player == P1) ? score_p1 : score_p2;
-            int *target_max = (player == P1) ? max_threat_p1 : max_threat_p2;
-            int val = 0;
-
-            // On ne lance l'évaluation que si cette pierre est le DÉBUT d'une ligne
-            
-            // 1. Horizontal
-            if (x == 0 || g->board[idx - 1] != player) {
-                val = evaluate_line(g, x, y, 1, 0, player);
-                *target_score += val;
-                if (val > *target_max) *target_max = val;
-            }
-
-            // 2. Vertical
-            if (y == 0 || g->board[idx - BOARD_SIZE] != player) {
-                val = evaluate_line(g, x, y, 0, 1, player);
-                *target_score += val;
-                if (val > *target_max) *target_max = val;
-            }
-
-            // 3. Diag Bas-Droite
-            if (x == 0 || y == 0 || g->board[idx - BOARD_SIZE - 1] != player) {
-                val = evaluate_line(g, x, y, 1, 1, player);
-                *target_score += val;
-                if (val > *target_max) *target_max = val;
-            }
-
-            // 4. Diag Haut-Droite
-            if (x == 0 || y == BOARD_SIZE - 1 || g->board[idx + BOARD_SIZE - 1] != player) {
-                val = evaluate_line(g, x, y, 1, -1, player);
-                *target_score += val;
-                if (val > *target_max) *target_max = val;
-            }
-        }
-    }
-}
 
 /* Met à jour les statistiques (Score total + Compteurs de menaces) */
 static void update_stats(game *g, int player, int score, bool remove_mode) {
@@ -657,31 +632,6 @@ void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
     }
 }
 
-// Ajoute cette fonction helper
-int count_overlapping_threats(game *g, int player) {
-    int threats = 0;
-    // On parcourt les lignes pré-calculées par ai_data.c (ou on scanne léger)
-    // Ici, une heuristique simplifiée : 
-    // On regarde les cases vides qui ont plus d'une ligne active pour le joueur.
-    
-    // NOTE : Cela suppose que tu as accès aux données 'lines' ou que tu scannes.
-    // Si tu n'as pas de structure complexe, on va faire un scan heuristique rapide 
-    // sur les coups possibles de l'adversaire.
-    
-    // Version simplifiée : On compte combien de Open Threes l'adversaire a.
-    // Si > 1, c'est une fourchette potentielle.
-    int open_threes = 0;
-    int blocked_fours = 0; // Menace Closed Four
-    
-    // On utilise les données que tu as déjà dans g->max_threat_level ?
-    // Non, max_threat_level donne juste le MAX. On a besoin du COMPTE.
-    
-    // Il faudrait idéalement une fonction qui retourne le NOMBRE de menaces de niveau 3/4.
-    // Si cette info n'est pas dispo dans 'game', on l'estime via le score positionnel
-    // ou on modifie ai_data.c pour compter les menaces.
-    
-    return 0; // Placeholder si pas implémentable facilement
-}
 
 /*
  * evaluate_board - Évaluation symétrique de la position.
@@ -732,6 +682,20 @@ int evaluate_board(game *g, int player) {
     if (opp_closed_fours >= 2) return -(WIN_SCORE - 2001);
     if (my_closed_fours  >= 2) return  (WIN_SCORE - 2001);
 
+    // 3b2. QUASI-TERMINAUX : Open Three + Closed Four adverse (combo fourchette imminente)
+    // 1 Open Three + 1 Closed Four = l'adversaire peut jouer un coup qui crée
+    // SIMULTANÉMENT un Open Four depuis le Closed Four ET prolonge l'Open Three —
+    // résultat : 2 Open Fours en 1 coup (fourchette irrémédiable).
+    // Observé dans les logs : AI score +20M à D8, adversaire joue ce combo → CRISE 3.
+    // Ce quasi-terminal (-WIN_SCORE+2500) est plus urgent que double Closed Four
+    // seul (-WIN_SCORE+2001 = légèrement moins grave car 2 coups nécessaires).
+    // Seuil 2500 > 2001 : placé ENTRE double-closed-four et double-open-four
+    // dans la hiérarchie, correctement en-dessous de double-open-four (1001).
+    int opp_open_threes_pre = g->threat_counts[opponent][IDX_OPEN_THREE];
+    int my_open_threes_pre  = g->threat_counts[player][IDX_OPEN_THREE];
+    if (opp_closed_fours >= 1 && opp_open_threes_pre >= 1) return -(WIN_SCORE - 2500);
+    if (my_closed_fours  >= 1 && my_open_threes_pre  >= 1) return  (WIN_SCORE - 2500);
+
     // 3c. QUASI-TERMINAUX : 4 captures adverses
     // 4 paires capturées = l'adversaire gagne dès qu'il capture 1 paire de plus.
     // Toute case exposée en fourchette devient un coup gagnant immédiat par capture.
@@ -743,6 +707,14 @@ int evaluate_board(game *g, int player) {
     if (opp_caps >= 4) return -(WIN_SCORE - 3001);
     if (my_caps  >= 4) return  (WIN_SCORE - 3001);
 
+    // 3d. QUASI-TERMINAUX : 3 captures + ≥1 open four adverse
+    // L'adversaire à 3 paires capturées + ≥1 open four = quasi-perdu :
+    // son open four force soit un alignement (si on ne bloque pas) soit une
+    // capture supplémentaire (si on bloque mais expose une paire). Légèrement
+    // moins urgent que caps≥4 seul → -(WIN_SCORE-3501) > -(WIN_SCORE-3001).
+    if (opp_caps >= 3 && opp_open_fours >= 1) return -(WIN_SCORE - 3501);
+    if (my_caps  >= 3 && my_open_fours  >= 1) return  (WIN_SCORE - 3501);
+
     // 4. ÉVALUATION SYMÉTRIQUE
     // pos_score accumule tous les scores de ligne ; on ajoute le bonus capture.
     long long my_score  = g->pos_score[player]   + (long long)g->captures[player]   * CAPTURE_BONUS;
@@ -750,31 +722,41 @@ int evaluate_board(game *g, int player) {
 
     long long total = my_score - opp_score;
 
+    // 4a2. MALUS Closed Four isolé (1 closed four sans open three)
+    // Un closed four seul est souvent invisible dans le score brut car il vaut
+    // seulement CLOSED_FOUR=5M dans pos_score — et pos_score est brut (somme de toutes
+    // les lignes). En pratique, l'adversaire peut promouvoir en open four en 1 coup.
+    // L'open_four promotion déclenche opp_open_fours>=1 (CRISE 2) mais c'est TROP TARD :
+    // le beam crisis (D6) ne voit pas assez loin pour bloquer + contre-attaquer.
+    // Pénalité explicite OPEN_FOUR (10M) quand opp a 1 closed four sans combo connu :
+    // force minimax à traiter la menace AVANT qu'elle se transforme en fourchette.
+    // Guard : seulement si pas de combo open_three (déjà géré par quasi-terminal 3b2).
+    if (opp_closed_fours >= 1 && opp_open_threes_pre == 0) {
+        total -= (long long)OPEN_FOUR;
+    }
+    if (my_closed_fours >= 1 && my_open_threes_pre == 0) {
+        total += (long long)OPEN_FOUR;
+    }
+
     // 4b. MALUS DE PRÉ-FOURCHETTE ADVERSE (niveau Open Three)
     // Si l'adversaire a déjà 2+ Open Threes actifs, la position est structurellement
     // dangereuse même si le score brut semble équilibré. On pénalise pour que
     // minimax préfère les branches où l'adversaire n'a pas encore construit ça.
-    int opp_open_threes = g->threat_counts[opponent][IDX_OPEN_THREE];
+    int opp_open_threes = opp_open_threes_pre;
     if (opp_open_threes >= 2) {
         total -= (long long)(opp_open_threes - 1) * OPEN_FOUR;
     }
     // Symétriquement : bonus si c'est nous qui avons plusieurs Open Threes
-    int my_open_threes = g->threat_counts[player][IDX_OPEN_THREE];
+    int my_open_threes = my_open_threes_pre;
     if (my_open_threes >= 2) {
         total += (long long)(my_open_threes - 1) * OPEN_FOUR;
     }
 
     // 4c. MALUS PRÉ-FOURCHETTE : Open Three + Closed Four
-    // 1 Open Three + 1 Closed Four = fourchette possible en 1 coup adverse :
-    // l'adversaire joue un coup qui étend simultanément les deux menaces.
-    // Ce pattern précède de 1-2 coups la crise niveau 3 — pénaliser maintenant
-    // force minimax à bloquer l'open three dès qu'un closed four est déjà posé.
-    if (opp_open_threes >= 1 && opp_closed_fours >= 1) {
-        total -= (long long)(opp_open_threes * opp_closed_fours) * OPEN_THREE;
-    }
-    if (my_open_threes >= 1 && my_closed_fours >= 1) {
-        total += (long long)(my_open_threes * my_closed_fours) * OPEN_THREE;
-    }
+    // Désormais géré par quasi-terminal 3b2 (retour anticipé).
+    // Ces cas ne devraient plus atteindre cette section du code.
+    // Conservé comme garde de sécurité uniquement.
+    // (intentionnellement vide : le quasi-terminal rend ce calcul redondant)
 
     // 4d. MALUS DOUBLE-EXTENSION LATENTE (2+ Closed Threes en directions distinctes)
     int opp_closed_threes = g->threat_counts[opponent][IDX_CLOSED_THREE];
@@ -784,10 +766,14 @@ int evaluate_board(game *g, int player) {
 
     // 4e. MALUS CAPTURES AVANCÉES (3 paires)
     // 4 captures = quasi-terminal (retour anticipé section 3c).
-    // 3 captures = 2 paires de plus suffisent à gagner. Signal fort équivalent
-    // à un OPEN_FOUR supplémentaire pour que minimax évite de laisser capturer.
-    if (opp_caps >= 3) total -= OPEN_FOUR;
-    if (my_caps  >= 3) total += OPEN_FOUR;
+    // 3 captures = 1 seule paire de plus suffit à mettre l'adversaire à 4 (quasi-terminal).
+    // Pénalité doublée (2×OPEN_FOUR = 20M) : le CAPTURE_BONUS linéaire (3×50K=150K) est
+    // totalement invisible face aux scores offensifs (OPEN_FOUR=10M, OPEN_THREE=2M).
+    // Sans cette pénalité forte, minimax ne voit pas de différence entre une position
+    // à 3 captures adverses exposée et une position sûre → continue de jouer offensif
+    // en offrant la 4e paire. Ce bug causait la défaite G1 (open four recréé 3 fois).
+    if (opp_caps >= 3) total -= (long long)OPEN_FOUR * 2;
+    if (my_caps  >= 3) total += (long long)OPEN_FOUR * 2;
 
     // 4. PLAFONNEMENT STRICT
     // Empêche une position non-terminale (ex: 2 open fours = 20M pts)
@@ -909,7 +895,10 @@ bool is_double_three(game *g, int idx, int player) {
     int open_three_count = 0;
     
     for (int d = 0; d < 4; d++) {
-        int score = evaluate_line(g, x, y, dx[d], dy[d], player);
+        // evaluate_full_line : bidirectionnel, compte les pierres des deux côtés
+        // de la case jouée. evaluate_line (unidirectionnel) ratait les patterns
+        // . X * X . où * est au centre du three.
+        int score = evaluate_full_line(g, x, y, dx[d], dy[d], player);
         
         // STRICTEMENT Open Three (pas Four)
         if (score == OPEN_THREE) {

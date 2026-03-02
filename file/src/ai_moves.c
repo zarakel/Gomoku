@@ -88,8 +88,23 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     if (g->captures[opponent] >= 4 && enemy_can_cap) return SORT_BLOCK_WIN + 5000000;
 
     // Niveau 2 : OFFENSIVE MAXIMALE - Créer menaces AVANT de défendre
-    // Un coup qui crée un Four ou plusieurs Threes
-    if (atk_score >= OPEN_FOUR) return SORT_THREAT_MAX + 5000000; // Boost massif
+    // Exception CRITIQUE capture-3 : si l'adversaire a 3 paires capturées,
+    // il lui suffit de 2 paires de plus pour gagner. Un coup offensif OPEN_FOUR
+    // qui expose simultanément des pierres peut offrir la 4e+5e capture gagnante.
+    // On sacrifie le boost OPEN_FOUR pour vérifier la vulnérabilité, même à depth<5.
+    // Guard : seulement si g->captures[opponent] >= 3 (cas rare, coût acceptable).
+    if (atk_score >= OPEN_FOUR) {
+        if (g->captures[opponent] >= 3) {
+            int vuln = count_vulnerable_pairs_after_move(g, idx, player);
+            if (vuln > 0) {
+                // Pénalité proportionnelle : chaque paire exposée peut mener à la défaite.
+                // Score négatif pour sortir du beam — l'IA doit trouver un coup
+                // offensif qui ne s'offre pas en même temps.
+                return -(OPEN_FOUR / 2) * vuln;
+            }
+        }
+        return SORT_THREAT_MAX + 5000000; // Boost massif
+    }
     
     // Niveau 2.5a : BLOCAGE FOURCHETTE ADVERSE (avant tout OPEN_THREE)
     // Guard STRICT depth >= 6 : compute_fork_value = simulate + 4×evaluate_line +
@@ -118,6 +133,29 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     
     // OPEN_THREE offensif
     if (atk_score >= OPEN_THREE) return SORT_THREAT_MAX;
+
+    // Niveau 2.7 : DUAL-PURPOSE — bloque une menace adverse ≥ OPEN_THREE ET crée
+    // notre propre menace ≥ CLOSED_THREE simultanément.
+    // Ces coups sont la clé en position déficitaire : ils réduisent la pression
+    // adverse tout en construisant notre propre jeu.
+    // Tier : entre SORT_THREAT_MAX et SORT_CAPTURE, valeur 12M.
+    // Guard : def_score >= OPEN_THREE (valide la partie défense), atk_score >=
+    // CLOSED_THREE (valide la partie offensive — même créer un CLOSED_THREE est utile).
+    if (def_score >= OPEN_THREE && atk_score >= CLOSED_THREE) {
+        // Bonus proportionnel à la qualité offensive : CLOSED_THREE=base, OPEN_THREE=+2M
+        int dual_bonus = 12000000 + (atk_score / 10);
+        return dual_bonus;
+    }
+
+    // Niveau 2.8 : BLOCAGE CLOSED_FOUR adverse — menace à 1 coup de la victoire.
+    // CLOSED_FOUR = 4 pierres + 1 extrémité ouverte. L'adversaire joue l'extrémité → victoire.
+    // Sans ce niveau, def_score=5M tombe dans le score pondéré final (5M×1.2=6M), insuffisant
+    // pour battre des coups offensifs à 8-12M → closed four JAMAIS bloqué dans le beam.
+    // Priorité 25M : plus urgent qu'un OPEN_THREE offensif (30M? non, en-dessous) mais plus
+    // urgent que dual-purpose (12M). On reste sous OPEN_THREE offensif (30M) car créer une
+    // menace offensive en bloquant un closed four est idéal, mais bloquer seul vaut déjà 25M.
+    // Guard : CLOSED_FOUR <= def_score < OPEN_FOUR pour ne pas interférer avec le niveau 3.
+    if (def_score >= CLOSED_FOUR && def_score < OPEN_FOUR) return 25000000 + (atk_score / 100);
 
     // Niveau 3 : Défense SECONDARY (après avoir testé offensive)
     if (def_score >= OPEN_FOUR) return SORT_BLOCK_WIN - 1000000; // Réduit priorité
@@ -266,18 +304,28 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     // Calculer max_to_keep AVANT le tri pour permettre un tri partiel (plus rapide).
     int max_to_keep;
     if (g->in_crisis) {
-        // Crise : beam restreint pour exploration défensive profonde.
-        max_to_keep = 12;
+        // Crise : beam adaptatif aussi selon stone_count.
+        // Un beam=12 fixe sur 25+ pierres explose l'arbre (D6 seulement observé).
+        // La défense en crise n'a pas besoin de plus de candidats que le mid-game
+        // normal + un delta de 4 pour couvrir les réponses défensives supplémentaires.
+        // stone_count < 15 : 12 (ouverture, peu de candidats, margin ok)
+        // stone_count 15-24 : 10 (early mid, crise rare, D8 accessible)
+        // stone_count 25-34 : 8  (mid-game dense, D8 sous 0.25s)
+        // stone_count >= 35 : 7  (fin de partie, tout est tactique)
+        if      (stone_count < 15) max_to_keep = 12;
+        else if (stone_count < 25) max_to_keep = 10;
+        else if (stone_count < 35) max_to_keep = 8;
+        else                       max_to_keep = 7;
     } else {
         // Beam adaptatif selon avancement : plus de pierres = arbre plus dense,
         // il faut réduire le beam pour conserver de la profondeur.
-        //   < 10 pierres  : beam=8 → ouverture propre, D12 accessible
-        //   10-19 pierres : beam=7 → début mid-game, réduit ~41% le coût D8
-        //   20-34 pierres : beam=6 → mid-game dense, D10 reste accessible
-        //   >= 35 pierres : beam=5 → fin de partie, positions tactiques, D10+
+        //   < 15 pierres  : beam=8 → ouverture + early game, qualité maximale
+        //   15-24 pierres : beam=7 → milieu de jeu, réduit ~41% le coût D8
+        //   25-34 pierres : beam=6 → mid-game dense, D10 reste accessible
+        //   >= 35 pierres : beam=5 → fin de partie, D10+
         int target_beam;
-        if      (stone_count < 10) target_beam = 8;
-        else if (stone_count < 20) target_beam = 7;
+        if      (stone_count < 15) target_beam = 8;
+        else if (stone_count < 25) target_beam = 7;
         else if (stone_count < 35) target_beam = 6;
         else                       target_beam = 5;
 
@@ -287,6 +335,21 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
 
         if (base < 4) base = 4;
         max_to_keep = base;
+    }
+
+    // DUAL-THREAT EXTENSION : si l'adversaire construit plusieurs menaces simultanées
+    // (2+ Open Threes ou 2+ Closed Fours), le beam standard risque de rater la
+    // contre-menace nécessaire. Élargir de +2, plafonner à 12 pour ne pas tuer depth 10.
+    // Conditionné à depth >= 4 pour ne pas impacter les feuilles (QS gère depth 0-3).
+    // Étendu : 1+ Closed Four aussi (l'adversaire peut promouvoir en 1 coup → fourchette).
+    {
+        int dmt_opp = (player == P1) ? P2 : P1;
+        if (depth >= 4
+            && (g->threat_counts[dmt_opp][IDX_OPEN_THREE] >= 2
+                || g->threat_counts[dmt_opp][IDX_CLOSED_FOUR] >= 1)) {
+            if (max_to_keep + 2 <= 12) max_to_keep += 2;
+            else max_to_keep = 12;
+        }
     }
 
     // Tri partiel : ne trier que les max_to_keep premiers éléments.
