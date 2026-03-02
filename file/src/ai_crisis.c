@@ -31,10 +31,10 @@ bool is_winning_threat(game *g, int idx, int opponent) {
     if (score >= WIN_SCORE) return true;
     
     // 2. Victoire par capture (si règle active)
-    // Seuil abaissé à >= 3 : si P1 a 3 captures et peut capturer 2 paires en 1 coup
-    // (4 pierres, caps/2 = 2), il atteint 5 → victoire.  Avec >= 4, ce cas était
+    // Seuil abaissé à >= 2 : si P1 a 2 captures et peut capturer 3 paires en 1 coup
+    // (6 pierres, caps/2 = 3), il atteint 5 → victoire.  Avec >= 3 ce cas était
     // invisible → is_winning_threat retournait false → défense jamais déclenchée.
-    if (g->captures[opponent] >= 3) {
+    if (g->captures[opponent] >= 2) {
         int caps = count_potential_captures(g, GET_X(idx), GET_Y(idx), opponent);
         if (g->captures[opponent] + (caps / 2) >= 5) return true;
     }
@@ -152,8 +152,38 @@ void update_crisis_state(game *g, int ia_player) {
         g->crisis_immediate_win = true; // L'adversaire gagne en 1 coup → VCF offensif interdit
         g->crisis_move_count = winning_moves;
         g->crisis_level = (winning_moves == 1) ? 2 : 3; // 3 = Mort quasi certaine (double menace)
+
+        // Si la menace est par captures (captures[opponent] >= 4), on peut aussi
+        // bloquer via CONTRE-CAPTURE : réduire captures[opponent] 4→3 annule la menace.
+        // Ajouter les cases de contre-capture dans crisis_moves pour que
+        // find_best_defense_with_threat_space les évalue comme candidats défensifs.
+        if (g->captures[opponent] >= 4 && winning_moves < 10) {
+            for (int ci = 0; ci < g->cand_count && winning_moves < 10; ci++) {
+                int k = g->cand_list[ci];
+                int caps = count_potential_captures(g, GET_X(k), GET_Y(k), ia_player);
+                if (caps >= 2) {
+                    // Vérifie que ce coup n'est pas déjà dans crisis_moves
+                    bool already = false;
+                    for (int m = 0; m < winning_moves; m++) {
+                        if (g->crisis_moves[m] == k) { already = true; break; }
+                    }
+                    if (!already)
+                        g->crisis_moves[winning_moves++] = k;
+                }
+            }
+            // S'il y a des contre-captures disponibles, monter crisis_level à 3
+            // pour forcer find_best_defense_with_threat_space
+            if (g->crisis_move_count < winning_moves) {
+                g->crisis_move_count = winning_moves;
+                g->crisis_level = 3;
+            }
+        }
+
         #ifdef DEBUG
-        printf(">>> CRISE NIVEAU %d : %d coup(s) gagnant(s) détecté(s) !\n", g->crisis_level, winning_moves);
+        bool by_capture = (g->captures[opponent] >= 4);
+        printf(">>> CRISE NIVEAU %d : %d coup(s) gagnant(s) détecté(s) ! [%s]\n",
+               g->crisis_level, g->crisis_move_count,
+               by_capture ? "par CAPTURE" : "par ALIGNEMENT");
         #endif
         return;
     }
@@ -166,6 +196,35 @@ void update_crisis_state(game *g, int ia_player) {
         g->in_crisis = true;
         g->crisis_move_count = open_four_count;
         g->crisis_level = (open_four_count >= 2) ? 3 : 2;
+
+        // P1-FIX: Si adversaire est aussi à captures >= 4, une contre-capture peut
+        // neutraliser sa victoire par capture ET bloquer l'open four.
+        // On fusionne les contre-captures dans crisis_moves pour que
+        // find_best_defense_with_threat_space les évalue côté capture.
+        if (g->captures[opponent] >= 4) {
+            int wm = g->crisis_move_count;
+            for (int ci = 0; ci < g->cand_count && wm < 10; ci++) {
+                int k = g->cand_list[ci];
+                if (g->board[k] != EMPTY) continue;
+                int caps = count_potential_captures(g, GET_X(k), GET_Y(k), ia_player);
+                if (caps >= 2) {
+                    bool already = false;
+                    for (int m = 0; m < wm; m++) {
+                        if (g->crisis_moves[m] == k) { already = true; break; }
+                    }
+                    if (!already)
+                        g->crisis_moves[wm++] = k;
+                }
+            }
+            if (wm > g->crisis_move_count) {
+                g->crisis_move_count = wm;
+                g->crisis_level = 3;  // force find_best_defense_with_threat_space
+                #ifdef DEBUG
+                printf(">>> CRISE P1-FIX : %d contre-captures fusionnées (Open4 + cap>=4)\n", wm - open_four_count);
+                #endif
+            }
+        }
+
         #ifdef DEBUG
         printf(">>> CRISE NIVEAU %d : %d Open Four adverses détectés\n", g->crisis_level, open_four_count);
         #endif
@@ -249,45 +308,42 @@ static int compare_defense(const void *a, const void *b) {
  */
 static void add_blocking_moves(game *g, int threat_idx, int ia_player, int *counts) {
     int opponent = (ia_player == P1) ? P2 : P1;
-    int x = GET_X(threat_idx);
-    int y = GET_Y(threat_idx);
-    
+    int tx = GET_X(threat_idx);
+    int ty = GET_Y(threat_idx);
+
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
-    
-    // La case de menace elle-même est le meilleur blocage
-    counts[threat_idx] += 10; 
-    
+
+    // La case de menace elle-même est toujours le meilleur blocage
+    if (g->board[threat_idx] == EMPTY)
+        counts[threat_idx] += 10;
+
     for (int d = 0; d < 4; d++) {
         for (int k = -4; k <= 4; k++) {
             if (k == 0) continue;
-            int nx = x + dx[d] * k;
-            int ny = y + dy[d] * k;
-            
-            if (IS_VALID(nx, ny) && g->board[GET_INDEX(nx, ny)] == EMPTY) {
-                int idx = GET_INDEX(nx, ny);
-                
-                // Simulation : Si on joue là, est-ce que la menace diminue ?
-                g->board[idx] = opponent; // L'adversaire joue son coup menaçant
-                int score_before = get_point_score(g, x, y, opponent);
-                g->board[idx] = ia_player; // NOUS jouons le blocage
-                
-                // On vérifie le score de l'adversaire SI on bloque ici
-                // Attention: pour tester si ça bloque, on remet EMPTY et on re-test la menace ?
-                // Non, plus simple : on joue notre pierre. Est-ce que l'adversaire peut toujours gagner en (x,y) ?
-                
-                g->board[idx] = ia_player;
-                g->board[threat_idx] = opponent;
-                int score_after = get_point_score(g, x, y, opponent);
-                
-                // Si le score de la menace chute significativement
-                if (score_after < OPEN_FOUR && score_before >= OPEN_FOUR) {
-                    counts[idx] += 2; // Bon blocage
-                }
-                
-                // Reset
-                g->board[threat_idx] = EMPTY;
-                g->board[idx] = EMPTY;
+            int nx = tx + dx[d] * k;
+            int ny = ty + dy[d] * k;
+            if (!IS_VALID(nx, ny)) continue;
+            int idx = GET_INDEX(nx, ny);
+            if (g->board[idx] != EMPTY) continue;
+
+            // Simulation 1 : plateau tel quel, adversaire joue en threat_idx
+            // → score de référence (menace active)
+            g->board[threat_idx] = opponent;
+            int score_before = get_point_score(g, tx, ty, opponent);
+            g->board[threat_idx] = EMPTY; // reset propre
+
+            // Simulation 2 : on bloque en idx, adversaire joue en threat_idx
+            // → score après notre blocage
+            g->board[idx] = ia_player;
+            g->board[threat_idx] = opponent;
+            int score_after = get_point_score(g, tx, ty, opponent);
+            g->board[threat_idx] = EMPTY; // reset propre
+            g->board[idx] = EMPTY;        // reset propre
+
+            // Bon blocage si la menace tombe sous OPEN_FOUR
+            if (score_before >= OPEN_FOUR && score_after < OPEN_FOUR) {
+                counts[idx] += 2;
             }
         }
     }
@@ -308,7 +364,22 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
     for (int i = 0; i < g->crisis_move_count; i++) {
         add_blocking_moves(g, g->crisis_moves[i], ia_player, blocking_weights);
     }
-    
+
+    // 1b. CONTRE-CAPTURES : quand l'adversaire est à 4 captures, une contre-capture
+    // (prendre une de ses paires) réduit captures[opponent] de 4→3 et annule la menace.
+    // Ces cases ne sont pas détectées par add_blocking_moves (qui teste le score OPEN_FOUR).
+    // On leur attribue un poids élevé (8) pour les placer en tête des candidats.
+    if (g->captures[opponent] >= 4) {
+        for (int ci = 0; ci < g->cand_count; ci++) {
+            int k = g->cand_list[ci];
+            if (g->board[k] != EMPTY) continue;
+            int caps = count_potential_captures(g, GET_X(k), GET_Y(k), ia_player);
+            if (caps >= 2) {
+                blocking_weights[k] += 8; // Poids fort : contre-capture annule la menace
+            }
+        }
+    }
+
     // 2. Génération des candidats
     DefenseCandidate candidates[MAX_BOARD];
     int cand_count = 0;
@@ -386,11 +457,27 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
     }
     
     // 5. BAROUD D'HONNEUR amélioré
-    // Aucun coup parfait trouvé : on ne joue plus le premier candidat aveuglément.
-    // Stratégie : parmi les top-8 candidats, choisir celui qui laisse le MOINS
+    // Aucun coup parfait trouvé : avant de jouer défensif, chercher une CONTRE-VICTOIRE.
+    // Si l'IA peut gagner en 1 ply (alignement de 5 ou 5e capture), le jouer immédiatement
+    // — même si l'adversaire a 2+ coups gagnants, une victoire simultanée l'emporte.
+    // Scan 1-ply inline (find_immediate_win est static dans ai.c, on reproduit la logique).
+    for (int ci = 0; ci < g->cand_count; ci++) {
+        int k = g->cand_list[ci];
+        if (is_double_three(g, k, ia_player)) continue;
+        MoveUndo undo_cw;
+        apply_move(g, k, ia_player, &undo_cw);
+        bool wins = (g->threat_counts[ia_player][IDX_WIN] > 0 || g->captures[ia_player] >= 5);
+        undo_move(g, ia_player, &undo_cw);
+        if (wins) {
+            #ifdef DEBUG
+            printf("    \U0001f3c6 CONTRE-VICTOIRE DÉSESPÉRÉE : (%d,%d)\n", GET_X(k), GET_Y(k));
+            #endif
+            return k;
+        }
+    }
+
+    // Pas de contre-victoire : choisir le coup qui laisse le MOINS
     // de coups gagnants immédiats à l'adversaire.
-    // → Si on ne peut pas gagner, on peut au moins rendre la victoire adverse plus difficile
-    //   (l'adversaire peut se tromper, surtout en partie rapide).
     int best_desperate = candidates[0].idx;
     int min_opp_wins = INT_MAX;
     int desperate_limit = (cand_count < 8) ? cand_count : 8;

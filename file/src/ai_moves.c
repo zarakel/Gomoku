@@ -56,7 +56,16 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     // et le bloc SORT_BLOCK_WIN+5000000 (captures[opponent]>=4). Ces cas sont rares
     // et couverts correctement par le score incrémental + TT warm des itérations
     // précédentes. Économie : ~3 μs/nœud → ~50ms sur D8 à T1.
-    bool enemy_can_cap = (depth >= 5) ? would_capture_us(g, idx, player) : false;
+    // EXCEPTION CRITIQUE : si captures[opponent] >= 4, l'adversaire est à 1 coup de
+    // gagner par capture → on active would_capture_us inconditionnellement pour que
+    // SORT_BLOCK_WIN+5000000 s'active même à depth 2-4. Coût acceptable car cette
+    // situation est rare et chaque case vulnérable expose une paire décisive.
+    bool enemy_can_cap;
+    if (g->captures[opponent] >= 4) {
+        enemy_can_cap = would_capture_us(g, idx, player);
+    } else {
+        enemy_can_cap = (depth >= 5) ? would_capture_us(g, idx, player) : false;
+    }
     
     // Evaluation des menaces de lignes creees par ce coup
     // atk_score : valeur offensive (nos menaces)
@@ -107,24 +116,39 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
     }
     
     // Niveau 2.5a : BLOCAGE FOURCHETTE ADVERSE (avant tout OPEN_THREE)
-    // Guard STRICT depth >= 6 : compute_fork_value = simulate + 4×evaluate_line +
-    // is_double_three(4×evaluate_line + count_potential_captures) = ~128 ops/candidat.
-    // Expérience : depth>=4 avec trigger OPEN_THREE faisait exploser le coût sur les
-    // positions tactiques (D4 à 0.40s observé), supprimant D8 sur T2-T3.
-    // À depth>=6 (1-2 plies sous racine), ~12 noeuds max → coût négligeable.
-    // La TT warm des itérations précédentes propage l'info de fork aux noeuds profonds.
+    // Guard STRICT depth >= 6 en position calme.
+    // EXCEPTION : si l'adversaire a déjà des signes précoces de multi-menaces
+    // (OPEN_TWO >= 2 = 2 paires séparées = futur double-fork, ou CLOSED_THREE >= 1
+    // = menace à 1 coup de devenir OPEN_THREE), on descend à depth >= 4.
+    // Cela permet de détecter et bloquer la construction de fourchette 2 plies plus tôt,
+    // avant que l'adversaire n'ait 2 OPEN_THREE simultanés (impossibles à bloquer).
+    // Coût : ~128 ops/candidat à depth 4-5 (branch factor ~8 → ~64 noeuds → ~8ms max).
+    // Validé acceptable car ces positions sont rares et le gain défensif est critique.
     int opp_fork_value = 0;
-    bool global_fork_threat = (depth >= 6) && (g->threat_counts[opponent][IDX_OPEN_TWO] >= 2);
-    if (depth >= 6 && (def_score >= CLOSED_THREE || global_fork_threat)) {
+    bool early_multi_threat = (g->threat_counts[opponent][IDX_OPEN_TWO] >= 2
+                               || g->threat_counts[opponent][IDX_CLOSED_THREE] >= 1);
+    int fork_depth_guard = early_multi_threat ? 4 : 6;
+    bool global_fork_threat = (depth >= fork_depth_guard) && (g->threat_counts[opponent][IDX_OPEN_TWO] >= 2);
+    if (depth >= fork_depth_guard && (def_score >= CLOSED_THREE || global_fork_threat)) {
         opp_fork_value = compute_fork_value(g, idx, opponent);
     }
     if (opp_fork_value > 0) {
-        return SORT_THREAT_MAX + 1000000;
+        // Bonus supplémentaire si l'adversaire a déjà OPEN_THREE : la fourchette est
+        // imminente, bloquer ici est ENCORE plus urgent.
+        int fork_bonus = (g->threat_counts[opponent][IDX_OPEN_THREE] >= 1) ? 2000000 : 1000000;
+        // RÉSEAU MULTI-FORK : adversaire a Open_Three >= 1 + Closed_Three >= 2 =
+        // plusieurs chemins de conversion simultanée. Ce coup doit être traité en
+        // priorité absolue même si l'IA est en train de gagner.
+        if (g->threat_counts[opponent][IDX_OPEN_THREE] >= 1
+            && g->threat_counts[opponent][IDX_CLOSED_THREE] >= 2)
+            fork_bonus = 3500000;  // Plus urgent que combo OPEN_THREE seul (2M)
+        return SORT_THREAT_MAX + fork_bonus;
     }
 
-    // Niveau 2.5b : DOUBLE-FORK OFFENSIF — guard depth >= 6, même raison.
+    // Niveau 2.5b : DOUBLE-FORK OFFENSIF — guard symétrique.
     int fork_value = 0;
-    if (depth >= 6 && atk_score >= CLOSED_THREE) {
+    int my_fork_depth_guard = (g->threat_counts[player][IDX_OPEN_TWO] >= 2) ? 4 : 6;
+    if (depth >= my_fork_depth_guard && atk_score >= CLOSED_THREE) {
         fork_value = compute_fork_value(g, idx, player);
     }
     if (fork_value > 0) {
@@ -136,13 +160,10 @@ static int score_move_ordering(game *g, int idx, int player, int tt_move, int de
 
     // Niveau 2.7 : DUAL-PURPOSE — bloque une menace adverse ≥ OPEN_THREE ET crée
     // notre propre menace ≥ CLOSED_THREE simultanément.
-    // Ces coups sont la clé en position déficitaire : ils réduisent la pression
-    // adverse tout en construisant notre propre jeu.
-    // Tier : entre SORT_THREAT_MAX et SORT_CAPTURE, valeur 12M.
-    // Guard : def_score >= OPEN_THREE (valide la partie défense), atk_score >=
-    // CLOSED_THREE (valide la partie offensive — même créer un CLOSED_THREE est utile).
+    // Valeur : 12M — sous OPEN_THREE offensif (30M) car on préfère attaquer pur.
+    // En position déficitaire, ce coup réduit la pression tout en construisant.
+    // Guard : def_score >= OPEN_THREE, atk_score >= CLOSED_THREE.
     if (def_score >= OPEN_THREE && atk_score >= CLOSED_THREE) {
-        // Bonus proportionnel à la qualité offensive : CLOSED_THREE=base, OPEN_THREE=+2M
         int dual_bonus = 12000000 + (atk_score / 10);
         return dual_bonus;
     }
@@ -257,7 +278,17 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     // Exceptions : tt_best_move + killer moves = toujours inclus même si cold
     //              (ces coups viennent d'itérations précédentes, peuvent être déplacés)
     // Gain attendu : cand_count ~60 → ~25 hot scorés → ×2.4 cheaper.
-    bool filter_cold = (depth >= 2) && (stone_count >= 8) && !g->in_crisis;
+    //
+    // P8-FIX : g->in_crisis est figé à la racine (update_crisis_state appelé 1× par tour).
+    // Aux nœuds internes, l'adversaire peut avoir créé un open_four ou une closed_four
+    // via apply_move → la vraie crise locale n'est pas reflétée par g->in_crisis.
+    // On remplace par un check local O(1) sur threat_counts (maintenu incrémentalement).
+    int opp_local = (player == P1) ? P2 : P1;
+    bool local_in_crisis = g->in_crisis  // racine en crise = toujours désactiver filter
+        || g->threat_counts[opp_local][IDX_OPEN_FOUR] > 0
+        || g->threat_counts[opp_local][IDX_CLOSED_FOUR] > 0
+        || g->captures[opp_local] >= 4;
+    bool filter_cold = (depth >= 2) && (stone_count >= 8) && !local_in_crisis;
     int km0 = (depth >= 0 && depth < MAX_DEPTH) ? killer_moves[depth][0] : -1;
     int km1 = (depth >= 0 && depth < MAX_DEPTH) ? killer_moves[depth][1] : -1;
 
@@ -303,7 +334,7 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     // Élagage (Beam Search) : adaptatif selon situation.
     // Calculer max_to_keep AVANT le tri pour permettre un tri partiel (plus rapide).
     int max_to_keep;
-    if (g->in_crisis) {
+    if (local_in_crisis) {
         // Crise : beam adaptatif aussi selon stone_count.
         // Un beam=12 fixe sur 25+ pierres explose l'arbre (D6 seulement observé).
         // La défense en crise n'a pas besoin de plus de candidats que le mid-game
@@ -337,18 +368,36 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         max_to_keep = base;
     }
 
-    // DUAL-THREAT EXTENSION : si l'adversaire construit plusieurs menaces simultanées
-    // (2+ Open Threes ou 2+ Closed Fours), le beam standard risque de rater la
-    // contre-menace nécessaire. Élargir de +2, plafonner à 12 pour ne pas tuer depth 10.
+    // DUAL-THREAT EXTENSION : si l'adversaire construit plusieurs menaces simultanées,
+    // le beam standard risque de rater la contre-menace nécessaire.
+    // Triggers (par ordre de sévérité) :
+    //   - 2+ Open Threes     : fourchette imminente (+2, cap 14)
+    //   - 1+ Closed Fours    : promotion en 1 coup → fourchette (+2, cap 14)
+    //   - 1+ Open Three + 2+ Closed Threes : réseau multi-fork en construction (+2, cap 14)
+    //   - 2+ Closed Threes seuls : plusieurs menaces latentes convergentes (+1, cap 12)
+    //   - 3+ Open Twos       : 3 paires = futur triple fork en construction (+1, cap 12)
     // Conditionné à depth >= 4 pour ne pas impacter les feuilles (QS gère depth 0-3).
-    // Étendu : 1+ Closed Four aussi (l'adversaire peut promouvoir en 1 coup → fourchette).
     {
         int dmt_opp = (player == P1) ? P2 : P1;
-        if (depth >= 4
-            && (g->threat_counts[dmt_opp][IDX_OPEN_THREE] >= 2
-                || g->threat_counts[dmt_opp][IDX_CLOSED_FOUR] >= 1)) {
-            if (max_to_keep + 2 <= 12) max_to_keep += 2;
-            else max_to_keep = 12;
+        if (depth >= 4) {
+            int opp_open3  = g->threat_counts[dmt_opp][IDX_OPEN_THREE];
+            int opp_cls3   = g->threat_counts[dmt_opp][IDX_CLOSED_THREE];
+            int opp_cls4   = g->threat_counts[dmt_opp][IDX_CLOSED_FOUR];
+            int opp_open2  = g->threat_counts[dmt_opp][IDX_OPEN_TWO];
+            bool severe_threat  = (opp_open3 >= 2 || opp_cls4 >= 1
+                                   || (opp_open3 >= 1 && opp_cls3 >= 2));
+            bool network_threat = (!severe_threat && opp_cls3 >= 2);
+            bool building_threat = (!severe_threat && !network_threat && opp_open2 >= 3);
+            if (severe_threat) {
+                if (max_to_keep + 2 <= 14) max_to_keep += 2;
+                else max_to_keep = 14;
+            } else if (network_threat) {
+                if (max_to_keep + 1 <= 12) max_to_keep += 1;
+                else max_to_keep = 12;
+            } else if (building_threat) {
+                if (max_to_keep + 1 <= 12) max_to_keep += 1;
+                else max_to_keep = 12;
+            }
         }
     }
 

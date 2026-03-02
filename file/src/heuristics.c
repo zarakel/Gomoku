@@ -85,8 +85,9 @@ int get_threat_level(int score) {
     return IDX_OTHERS;
 }
 
-/* Forward declaration : update_stats est statique et définie plus bas */
+/* Forward declarations : définies plus bas dans ce fichier */
 static void update_stats(game *g, int player, int score, bool remove_mode);
+static int evaluate_full_line(game *g, int x, int y, int dx, int dy, int player);
 
 /**
  * Recalcule completement les statistiques du plateau.
@@ -137,7 +138,7 @@ void refresh_board_stats(game *g) {
                             || g->board[GET_INDEX(prev_x, prev_y)] != p;
 
             if (is_start) {
-                int score = evaluate_line(g, x, y, dx, dy, p);
+                int score = evaluate_full_line(g, x, y, dx, dy, p);
                 update_stats(g, p, score, false); // ADD — exactement 1× par ligne
             }
         }
@@ -331,9 +332,6 @@ int find_gapped_three_hole(game *g, int player) {
     
     return -1;
 }
-
-/* Forward declaration : définie après evaluate_line */
-static int evaluate_full_line(game *g, int x, int y, int dx, int dy, int player);
 
 /*
  * Détecte si un coup crée une fourchette (plusieurs menaces simultanées)
@@ -622,10 +620,12 @@ void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
             }
 
             if (is_start) {
-                // On évalue cette ligne qui passe potentiellement par (x,y)
-                // Note : On re-vérifie si elle passe vraiment par la zone d'impact si on veut optimiser,
-                // mais ici on réévalue simplement les têtes proches, ce qui est sûr et rapide.
-                int score = evaluate_line(g, sx, sy, dx, dy, p);
+                // evaluate_full_line : bidirectionnel depuis la tête de ligne.
+                // evaluate_line (unidirectionnel) sous-évaluait les pierres au centre
+                // d'un alignement car il ne voyait qu'une moitié de la séquence.
+                // Ex : X au centre de .X*X. → evaluate_line voit len=1, evaluate_full_line voit 3.
+                // Les deux doivent rester cohérents avec get_point_score / score_move_ordering.
+                int score = evaluate_full_line(g, sx, sy, dx, dy, p);
                 update_stats(g, p, score, remove_mode);
             }
         }
@@ -763,6 +763,50 @@ int evaluate_board(game *g, int player) {
     int my_closed_threes  = g->threat_counts[player][IDX_CLOSED_THREE];
     if (opp_closed_threes >= 2) total -= (long long)(opp_closed_threes - 1) * OPEN_THREE;
     if (my_closed_threes  >= 2) total += (long long)(my_closed_threes  - 1) * OPEN_THREE;
+
+    // 4d3. MALUS RÉSEAU MULTI-CLOSED-THREE (3+ closed threes simultanés)
+    // 3+ closed_threes = réseau convergent précurseur de 4+ open_fours en 2 coups.
+    // Observé dans logs partie 3 : l'IA score +28K pendant que l'humain construit
+    // ce réseau, puis explosion à 4 open_fours. Le malus 4d (2× OPEN_THREE = 4M)
+    // est compensé par le pos_score offensif → balance vue comme +28K.
+    // Pénalité additionnelle OPEN_FOUR (10M) pour les cas >= 3 : rend la position
+    // quasi-terminale pour minimax qui préférera bloquer la construction.
+    // Guard : seulement si aucun open_four adverse déjà présent (quasi-terminal 3a déjà actif).
+    if (opp_closed_threes >= 3 && opp_open_fours == 0)
+        total -= (long long)OPEN_FOUR;
+    if (my_closed_threes  >= 3 && my_open_fours  == 0)
+        total += (long long)OPEN_FOUR;
+
+    // 4d3. NOTE : le malus "réseau multi-fork latent" (opp_open_threes>=1 + opp_closed_threes>=2)
+    // a été testé à plusieurs reprises (OPEN_FOUR=10M, WIN_SCORE-4001 quasi-terminal,
+    // OPEN_THREE*3=6M) et cause systématiquement des régressions :
+    // - Valeur trop forte : franchit le plafonnement WIN_SCORE-1001 en cumul avec 4d+4d2
+    // - Valeur trop faible : invisible face à un score offensif de +20M
+    // - Asymétrique mais garde (stone_count>=10) insuffisante : déclenche sur positions normales
+    // La protection contre ce pattern est correctement gérée par :
+    //   ai.c : WIN-OVERRIDE SUPPRESSED (opp_network guard)
+    //   ai_moves.c : beam extension network_threat (+1/+2 cap 12/14)
+    // Ces mécanismes opèrent au niveau de la recherche (pas du scoring statique) et
+    // n'ont pas d'effets de bord sur l'aspiration search ni sur le pruning.
+
+    // 4d2. MALUS PRÉ-FOURCHETTE COMBINÉ : Open Two + Closed Three adverses simultanés
+    // 2+ OPEN_TWO seuls = paires isolées, peut être notre propre construction offensive.
+    // Le pénaliser symétriquement bruitait les positions offensives légitimes (régression
+    // observée : l'IA abandonnait ses propres structures en cours).
+    // Condition stricte : OPEN_TWO >= 2 ET CLOSED_THREE >= 1 simultanément = l'adversaire
+    // a des paires EN COURS de devenir des menaces, pas juste 2 paires isolées.
+    // Pénalité ciblée OPEN_THREE (2M) : visible mais n'écrase pas les terminaux.
+    {
+        int opp_open_twos    = g->threat_counts[opponent][IDX_OPEN_TWO];
+        int opp_cls_threes   = g->threat_counts[opponent][IDX_CLOSED_THREE];
+        if (opp_open_twos >= 2 && opp_cls_threes >= 1)
+            total -= (long long)OPEN_THREE;
+        // Symétrique offensif : bonus si c'est nous qui combinons paires + menaces fermées
+        int my_open_twos   = g->threat_counts[player][IDX_OPEN_TWO];
+        int my_cls_threes  = g->threat_counts[player][IDX_CLOSED_THREE];
+        if (my_open_twos >= 2 && my_cls_threes >= 1)
+            total += (long long)OPEN_THREE;
+    }
 
     // 4e. MALUS CAPTURES AVANCÉES (3 paires)
     // 4 captures = quasi-terminal (retour anticipé section 3c).

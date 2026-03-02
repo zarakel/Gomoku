@@ -137,13 +137,17 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     // Conditions de sécurité :
     //   - null_allowed : jamais deux null moves consécutifs (évite les faux cutoffs)
     //   - depth >= 3 : inutile en feuilles (overhead > gain)
-    //   - NOT in_crisis : en défense critique, passer serait catastrophique
+    //   - !local_crisis : en défense critique AU NŒUD COURANT, passer serait catastrophique.
+    //     On vérifie l'état local (pas g->in_crisis qui est figé à la racine) :
+    //     si l'adversaire a un open_four ou une closed_four ici, on ne peut pas passer.
     //   - captures[opponent] < 4 : si adverse proche de gagner par capture, trop risqué
     //   - current_eval >= beta : on est déjà en position avantageuse (condition classique)
     //   - abs(current_eval) < WIN_SCORE - 10000 : pas dans une séquence de mat
+    bool local_crisis = (g->max_threat_level[opponent] >= IDX_OPEN_FOUR
+                         || g->captures[opponent] >= 4);
     if (null_allowed
         && depth >= 3
-        && !g->in_crisis
+        && !local_crisis
         && g->captures[opponent] < 4
         && current_eval >= beta
         && abs(current_eval) < WIN_SCORE - 10000)
@@ -187,7 +191,7 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
         //           positionnels sans valeur tactique immédiate.
         // depth=2 : marge plus grande (CLOSED_THREE = 50000) pour couvrir 2 coups,
         //           seulement les coups très tardifs (i >= 8) sous OPEN_TWO.
-        if (!g->in_crisis && abs(current_eval) < WIN_SCORE - 50000) {
+        if (!local_crisis && abs(current_eval) < WIN_SCORE - 50000) {
             if (depth == 1 && i >= 4
                 && moves[i].score_estim < CLOSED_THREE
                 && current_eval + moves[i].score_estim + (CLOSED_THREE / 2) <= alpha) {
