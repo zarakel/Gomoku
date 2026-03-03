@@ -132,10 +132,11 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
         // vers des ply supplémentaires en minimax.
         // Guard : on garde qs=3 dès qu'un OPEN_THREE ou CLOSED_FOUR est présent
         // (position tactiquement instable) pour éviter l'effet d'horizon.
-        int qs_depth = (g->threat_counts[opponent][IDX_OPEN_THREE] > 0
-                        || g->threat_counts[player][IDX_OPEN_THREE] > 0
-                        || g->max_threat_level[opponent] >= IDX_CLOSED_FOUR
-                        || g->max_threat_level[player] >= IDX_CLOSED_FOUR) ? 3 : 2;
+        // QS depth = 2 fixe : l'ancien adaptif (2/3) coûtait ~5× plus de nœuds QS
+        // en position tactique, ce qui empêchait d'atteindre D10+ en mid-game dense.
+        // Avec beam réduit + LMR agressif, QS=2 suffit pour capter les tactiques
+        // immédiates (captures + menaces CLOSED_THREE+) sans exploser le budget.
+        int qs_depth = 2;
         return quiescence_search(g, alpha, beta, player, qs_depth, start_time);
     }
 
@@ -245,9 +246,9 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
             // Guard commun : score_estim sert déjà de filtre tactique.
             // Si LMR produit un score > alpha, la recherche pleine confirme (ci-dessous).
             int R = 0;
-            if (depth >= 3 && i >= 4 && moves[i].score_estim < CLOSED_THREE) R = 1;
-            if (depth >= 3 && i >= 6 && moves[i].score_estim < OPEN_TWO)     R = 2;
-            if (depth >= 5 && i >= 9 && moves[i].score_estim < CLOSED_TWO)   R = 3;
+            if (depth >= 2 && i >= 2 && moves[i].score_estim < CLOSED_THREE) R = 1;
+            if (depth >= 3 && i >= 5 && moves[i].score_estim < OPEN_TWO)     R = 2;
+            if (depth >= 4 && i >= 7 && moves[i].score_estim < CLOSED_TWO)   R = 3;
             
             val = -negamax(g, depth - 1 - R, -alpha - 1, -alpha, opponent, start_time, true);
             

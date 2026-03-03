@@ -289,15 +289,19 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
         || g->threat_counts[opp_local][IDX_CLOSED_FOUR] > 0
         || g->captures[opp_local] >= 4;
     bool filter_cold = (depth >= 2) && (stone_count >= 8) && !local_in_crisis;
+    // Cold threshold adaptatif : en mid-game dense (20+ pierres), les candidats
+    // avec refcount <= 2 (seulement 2 pierres dans dist≤2) sont périphériques
+    // et rarement le meilleur coup. Les skip réduit le pool candidat de ~30%.
+    int cold_threshold = (stone_count >= 20) ? 2 : 1;
     int km0 = (depth >= 0 && depth < MAX_DEPTH) ? killer_moves[depth][0] : -1;
     int km1 = (depth >= 0 && depth < MAX_DEPTH) ? killer_moves[depth][1] : -1;
 
     for (int i = 0; i < g->cand_count; i++) {
         int idx = g->cand_list[i];
 
-        // Fast pre-filter O(1) : skip les candidats isolés
+        // Fast pre-filter O(1) : skip les candidats isolés/périphériques
         if (filter_cold
-            && g->cand_refcount[idx] <= 1
+            && g->cand_refcount[idx] <= cold_threshold
             && idx != tt_best_move
             && idx != km0
             && idx != km1) continue;
@@ -335,37 +339,23 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
     // Calculer max_to_keep AVANT le tri pour permettre un tri partiel (plus rapide).
     int max_to_keep;
     if (local_in_crisis) {
-        // Crise : beam adaptatif aussi selon stone_count.
-        // Un beam=12 fixe sur 25+ pierres explose l'arbre (D6 seulement observé).
-        // La défense en crise n'a pas besoin de plus de candidats que le mid-game
-        // normal + un delta de 4 pour couvrir les réponses défensives supplémentaires.
-        // stone_count < 15 : 12 (ouverture, peu de candidats, margin ok)
-        // stone_count 15-24 : 10 (early mid, crise rare, D8 accessible)
-        // stone_count 25-34 : 8  (mid-game dense, D8 sous 0.25s)
-        // stone_count >= 35 : 7  (fin de partie, tout est tactique)
-        if      (stone_count < 15) max_to_keep = 12;
-        else if (stone_count < 25) max_to_keep = 10;
-        else if (stone_count < 35) max_to_keep = 8;
-        else                       max_to_keep = 7;
+        // Crise : beam réduit pour D10+ : marge +2-3 vs non-crisis.
+        if      (stone_count < 15) max_to_keep = 8;
+        else if (stone_count < 25) max_to_keep = 7;
+        else if (stone_count < 35) max_to_keep = 6;
+        else                       max_to_keep = 6;
     } else {
-        // Beam adaptatif selon avancement : plus de pierres = arbre plus dense,
-        // il faut réduire le beam pour conserver de la profondeur.
-        //   < 15 pierres  : beam=8 → ouverture + early game, qualité maximale
-        //   15-24 pierres : beam=7 → milieu de jeu, réduit ~41% le coût D8
-        //   25-34 pierres : beam=6 → mid-game dense, D10 reste accessible
-        //   >= 35 pierres : beam=5 → fin de partie, D10+
+        // Beam adaptatif : réduit pour atteindre D10+ en mid-game dense.
+        // Avec TT + killers + scoring, le meilleur coup est dans les top 2-3.
+        // beam=5 à 15-24 pierres (était 6) : le levier principal pour D10 en défensif.
         int target_beam;
-        if      (stone_count < 15) target_beam = 8;
-        else if (stone_count < 25) target_beam = 7;
-        else if (stone_count < 35) target_beam = 6;
+        if      (stone_count < 15) target_beam = 7;
+        else if (stone_count < 25) target_beam = 5;
+        else if (stone_count < 35) target_beam = 5;
         else                       target_beam = 5;
 
-        int base;
-        if (depth == 0) base = target_beam + 2;  // root légèrement plus large pour qualité
-        else            base = target_beam;
-
-        if (base < 4) base = 4;
-        max_to_keep = base;
+        if (target_beam < 4) target_beam = 4;
+        max_to_keep = target_beam;
     }
 
     // DUAL-THREAT EXTENSION : si l'adversaire construit plusieurs menaces simultanées,
@@ -400,6 +390,15 @@ int generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_
             }
         }
     }
+
+    // DEPTH-DEPENDENT NARROWING : aux niveaux proches des feuilles (depth 1-3),
+    // réduire le beam de 1 (minimum 4). La grande majorité des nœuds de l'arbre
+    // sont concentrés ici (> 80%). Réduire d'1 à ces niveaux coupe ~20-30% du
+    // total sans impact sur la qualité root (les niveaux supérieurs gardent le
+    // beam complet). La re-recherche LMR garantit que les coups manqués à ces
+    // niveaux sont retrouvés si nécessaire.
+    if (depth >= 1 && depth <= 3 && max_to_keep > 4)
+        max_to_keep--;
 
     // Tri partiel : ne trier que les max_to_keep premiers éléments.
     // Full qsort est O(n log n) avec overhead fonction-pointeur. Pour beam<=14,

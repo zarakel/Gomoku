@@ -644,6 +644,16 @@ int evaluate_board(game *g, int player) {
     if (opp_open_fours >= 2) return -(WIN_SCORE - 1001);
     if (my_open_fours  >= 2) return  (WIN_SCORE - 1001);
 
+    // 3a2. QUASI-TERMINAL : UN SEUL Open Four adverse
+    // Un open four (4 pierres, 2 bouts ouverts) = l'adversaire joue l'un des 2 bouts
+    // et gagne. Le joueur courant ne peut bloquer qu'un seul bout, l'autre reste ouvert.
+    // SAUF SI on peut capturer une pierre de l'alignement (Gomoku avec captures).
+    // → Quasi-terminal car la défense par capture est rare et spécifique.
+    // Score -WIN_SCORE+1501 : plus grave que double closed four (-2001) car c'est
+    // un coup plus proche de la victoire, mais moins que double open four (-1001).
+    if (opp_open_fours >= 1) return -(WIN_SCORE - 1501);
+    if (my_open_fours  >= 1) return  (WIN_SCORE - 1501);
+
     // 3b. QUASI-TERMINAUX : double Closed Four
     // Un Closed Four = 4 pierres avec 1 extrémité ouverte seulement.
     // Un seul coup de cet adversaire transforme chaque Closed Four en victoire (si l'extrémité

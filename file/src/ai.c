@@ -329,13 +329,44 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         int imm_self = find_immediate_win(g, ia_player);
         if (imm_self == -1) {
             // L'adversaire gagne en 1 coup et on ne gagne pas en 1 coup.
-            // Bloquer, SAUF si ce coup crée un double-three pour nous (illégal).
+            // Bloquer le premier coup gagnant détecté.
+            // MAIS : si l'adversaire a un OPEN FOUR (2 bouts ouverts), bloquer un seul
+            // bout est insuffisant. Dans ce cas, chercher si une CAPTURE peut neutraliser
+            // l'alignement en retirant une pierre.
             if (!is_double_three(g, imm_opp, ia_player)) {
                 #ifdef DEBUG
                 printf(">>> OPP-WIN-GUARD : (%d,%d) → (%d,%d) [block opp immediate win]\n",
                        GET_X(best_move), GET_Y(best_move), GET_X(imm_opp), GET_Y(imm_opp));
                 #endif
-                best_move = imm_opp;
+                // Vérifier si bloquer résout vraiment (l'adversaire n'a pas un 2e coup gagnant)
+                MoveUndo test_undo;
+                apply_move(g, imm_opp, ia_player, &test_undo);
+                int imm_opp2 = find_immediate_win(g, opponent);
+                undo_move(g, ia_player, &test_undo);
+                if (imm_opp2 != -1) {
+                    // L'adversaire a encore un coup gagnant même après blocage → open four.
+                    // Chercher un coup de capture qui casse l'alignement.
+                    int cap_move = find_best_capture_move(g, ia_player);
+                    if (cap_move != -1) {
+                        // Vérifier que cette capture neutralise la menace.
+                        apply_move(g, cap_move, ia_player, &test_undo);
+                        int imm_after_cap = find_immediate_win(g, opponent);
+                        undo_move(g, ia_player, &test_undo);
+                        if (imm_after_cap == -1) {
+                            #ifdef DEBUG
+                            printf(">>> OPP-WIN-GUARD : capture (%d,%d) neutralise open four\n",
+                                   GET_X(cap_move), GET_Y(cap_move));
+                            #endif
+                            best_move = cap_move;
+                        } else {
+                            best_move = imm_opp; // Pas de meilleure option, bloquer un côté
+                        }
+                    } else {
+                        best_move = imm_opp; // Pas de capture possible
+                    }
+                } else {
+                    best_move = imm_opp; // Bloquer suffit (closed four, pas open four)
+                }
             }
         }
     }

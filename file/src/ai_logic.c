@@ -120,19 +120,46 @@ void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     undo->captured_count = nb_cap;
 
     if (nb_cap > 0) {
-        // Captures modifient la topologie du plateau : les pierres retirées
-        // par apply_captures_for_ai étaient encore présentes lors du step 2
-        // (remove). Les mettre à jour une-par-une crée des scores stale
-        // car chaque capture voit les autres dans un état partiellement modifié.
-        // Solution : recalcul complet (O(stone_count×4)) — correct et simple.
+        // Captures : les pierres retirées par apply_captures_for_ai étaient présentes
+        // lors du step 2 (remove → old board). Pour corriger les scores :
+        //   a) REMOVE les scores des lignes passant par chaque pierre capturée
+        //      (dans l'état board post-pose mais pré-remove, c'est-à-dire captured stones
+        //       sont déjà EMPTY car apply_captures_for_ai les a retirées).
+        //      → On les remet temporairement pour retirer leur score correctement.
+        //   b) On les re-retire du board.
+        //   c) On ADD les scores de TOUTES les positions affectées (joué + captures)
+        //      dans l'état final du board (toutes captures faites).
+        //
+        // Étape A : retirer les anciens scores autour des captures.
+        // Les pierres capturées sont DÉJÀ retirées du board par apply_captures_for_ai.
+        // On les remet TOUTES d'abord pour avoir le bon état "juste après la pose".
         g->captures[player] += (nb_cap / 2);
         for (int i = 0; i < nb_cap; i++) {
             undo->captured_indices[i] = captured_indices[i];
+            g->board[captured_indices[i]] = opponent;  // remettre temporairement
+        }
+        // Maintenant board = stone posée + toutes captures encore présentes.
+        // Retirer les scores de chaque capture.
+        for (int i = 0; i < nb_cap; i++) {
+            int cx = GET_X(captured_indices[i]);
+            int cy = GET_Y(captured_indices[i]);
+            update_impacted_scores(g, cx, cy, true);
+        }
+        // Étape B : retirer toutes les captures du board en même temps.
+        for (int i = 0; i < nb_cap; i++) {
+            g->board[captured_indices[i]] = EMPTY;
             cand_on_remove(g, captured_indices[i]);
             g->stone_count--;
             g->current_hash ^= zobrist_table[captured_indices[i]][opponent];
         }
-        refresh_board_stats(g);
+        // Étape C : ajouter les nouveaux scores pour le coup joué ET les zones capturées.
+        // Board = état final (stone posée, captures retirées).
+        update_impacted_scores(g, x, y, false);
+        for (int i = 0; i < nb_cap; i++) {
+            int cx = GET_X(captured_indices[i]);
+            int cy = GET_Y(captured_indices[i]);
+            update_impacted_scores(g, cx, cy, false);
+        }
     } else {
         // Pas de capture : l'update incrémental classique est correct.
         update_impacted_scores(g, x, y, false);
@@ -151,8 +178,19 @@ void undo_move(game *g, int player, MoveUndo *undo) {
     int opponent = (player == P1) ? P2 : P1;
     bool had_captures = (undo->captured_count > 0);
 
-    // 1. RESTAURER LES CAPTURES (ordre inverse)
     if (had_captures) {
+        // Symétrique de apply_move : inverser les 3 étapes (C, B, A).
+        // État actuel : stone posée, captures retirées (état final d'apply_move).
+
+        // Étape C inversée : retirer les scores du coup joué ET des zones capturées.
+        update_impacted_scores(g, x, y, true);
+        for (int i = 0; i < undo->captured_count; i++) {
+            int cx = GET_X(undo->captured_indices[i]);
+            int cy = GET_Y(undo->captured_indices[i]);
+            update_impacted_scores(g, cx, cy, true);
+        }
+
+        // Étape B inversée : remettre toutes les captures sur le board.
         for (int i = undo->captured_count - 1; i >= 0; i--) {
             int c_idx = undo->captured_indices[i];
             g->board[c_idx] = opponent;
@@ -160,25 +198,39 @@ void undo_move(game *g, int player, MoveUndo *undo) {
             cand_on_place(g, c_idx);
             g->stone_count++;
         }
-    }
-    g->captures[player] = undo->prev_captures[player];
-    g->captures[opponent] = undo->prev_captures[opponent];
 
-    // 2. RETIRER LA PIERRE JOUÉE
-    if (!had_captures)
-        update_impacted_scores(g, x, y, true);
+        // Étape A inversée : re-scorer les lignes autour des captures (maintenant rétablies).
+        for (int i = 0; i < undo->captured_count; i++) {
+            int cx = GET_X(undo->captured_indices[i]);
+            int cy = GET_Y(undo->captured_indices[i]);
+            update_impacted_scores(g, cx, cy, false);
+        }
 
-    g->board[idx] = EMPTY;
-    g->current_hash ^= zobrist_table[idx][player];
-    cand_on_remove(g, idx);
-    g->stone_count--;
+        // Restaurer les compteurs de captures.
+        g->captures[player] = undo->prev_captures[player];
+        g->captures[opponent] = undo->prev_captures[opponent];
 
-    if (!had_captures)
+        // Retirer la pierre jouée.
+        // Score déjà retiré dans l'étape C inversée ci-dessus.
+        g->board[idx] = EMPTY;
+        g->current_hash ^= zobrist_table[idx][player];
+        cand_on_remove(g, idx);
+        g->stone_count--;
+
+        // Ajouter les scores du vide restauré.
         update_impacted_scores(g, x, y, false);
+    } else {
+        g->captures[player] = undo->prev_captures[player];
+        g->captures[opponent] = undo->prev_captures[opponent];
 
-    // 3. Si captures : recalcul complet (symétrique avec apply_move)
-    if (had_captures)
-        refresh_board_stats(g);
+        // Retirer la pierre jouée.
+        update_impacted_scores(g, x, y, true);
+        g->board[idx] = EMPTY;
+        g->current_hash ^= zobrist_table[idx][player];
+        cand_on_remove(g, idx);
+        g->stone_count--;
+        update_impacted_scores(g, x, y, false);
+    }
 }
 
 /**
