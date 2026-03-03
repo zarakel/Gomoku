@@ -271,15 +271,18 @@ static int find_gapped_three_in_line(game *g, int x, int y, int dx, int dy, int 
 int find_gapped_three_hole(game *g, int player) {
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
-    int opponent = (player == P1) ? P2 : P1;
-    
-    // Méthode 1 : Scanner depuis chaque pierre du joueur
+
+    // D5-FIX: Seule la Méthode 1 (scan depuis les pierres du joueur) est nécessaire.
+    // find_gapped_three_in_line construit un buffer centré sur (x,y) et cherche
+    // les patterns .X_XX. et .XX_X. dans toutes les fenêtres → couvre tous les cas.
+    // La Méthode 2 (scan depuis les cases vides) détectait les mêmes trous mais
+    // en arrivant du côté opposé → double comptage, O(2×MAX_BOARD×4) au lieu de O(MAX_BOARD×4).
     for (int idx = 0; idx < MAX_BOARD; idx++) {
         if (g->board[idx] != player) continue;
-        
+
         int x = GET_X(idx);
         int y = GET_Y(idx);
-        
+
         for (int d = 0; d < 4; d++) {
             int hole = find_gapped_three_in_line(g, x, y, dx[d], dy[d], player);
             if (hole != -1) {
@@ -287,49 +290,7 @@ int find_gapped_three_hole(game *g, int player) {
             }
         }
     }
-    
-    // Méthode 2 : Scanner depuis chaque case VIDE
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
-        
-        int x = GET_X(idx);
-        int y = GET_Y(idx);
-        
-        for (int d = 0; d < 4; d++) {
-            int stones_pos = 0;
-            int stones_neg = 0;
-            bool open_pos = false;
-            bool open_neg = false;
-            
-            // Scan positif
-            for (int k = 1; k <= 3; k++) {
-                int nx = x + dx[d] * k;
-                int ny = y + dy[d] * k;
-                if (!IS_VALID(nx, ny)) break;
-                int cell = g->board[GET_INDEX(nx, ny)];
-                if (cell == player) stones_pos++;
-                else if (cell == EMPTY) { open_pos = true; break; }
-                else break;
-            }
-            
-            // Scan négatif
-            for (int k = 1; k <= 3; k++) {
-                int nx = x - dx[d] * k;
-                int ny = y - dy[d] * k;
-                if (!IS_VALID(nx, ny)) break;
-                int cell = g->board[GET_INDEX(nx, ny)];
-                if (cell == player) stones_neg++;
-                else if (cell == EMPTY) { open_neg = true; break; }
-                else break;
-            }
-            
-            // Gapped Open Three : 3 pierres + 2 bouts ouverts
-            if (stones_pos + stones_neg == 3 && open_pos && open_neg) {
-                return idx;
-            }
-        }
-    }
-    
+
     return -1;
 }
 
@@ -596,9 +557,20 @@ void update_impacted_scores(game *g, int x, int y, bool remove_mode) {
         int dx = dirs[d][0];
         int dy = dirs[d][1];
 
-        // On regarde une fenêtre de [-5, +0] autour de x,y pour trouver les DÉBUTS de lignes
-        // qui pourraient passer par (x,y).
-        for (int k = -5; k <= 0; k++) {
+        // FIX: Fenêtre étendue de [-5, +1] autour de (x,y).
+        // k=-5..0 : couvre les têtes de lignes EN AMONT qui passent par (x,y).
+        // k=+1    : couvre la tête de ligne IMMÉDIATEMENT EN AVAL.
+        //   Quand on POSE une pierre à (x,y) :
+        //     - La case (x+dx, y+dy) pouvait être un « start » (board[x]=EMPTY ≠ p).
+        //       Après la pose, si board[x]=p, ce n'est plus un start.
+        //       → Son ancien score doit être retiré (step remove) mais pas re-ajouté
+        //         (step add la skippera car prev == p).
+        //   Quand on RETIRE une pierre de (x,y) :
+        //     - La case (x+dx, y+dy) redevient un start (board[x]=EMPTY ≠ p).
+        //       → Son nouveau score doit être ajouté (step add).
+        //   Sans k=+1, ces scores « forward » restaient stale dans pos_score
+        //   et threat_counts (ex: IDX_WIN false positive observé en test).
+        for (int k = -5; k <= 1; k++) {
             int sx = x + k * dx;
             int sy = y + k * dy;
 
@@ -925,7 +897,7 @@ int check_free_three_pattern(game *g, int x, int y, int dx, int dy, int player) 
 bool is_double_three(game *g, int idx, int player) {
     // Seul P1 (Noir) est soumis à la règle du double-three (Renju).
     // P2 n'a aucune restriction → retour immédiat O(1) pour éviter
-    // 4×evaluate_line inutiles dans les noeuds quiescence P2.
+    // 4×check_free_three_pattern inutiles dans les noeuds quiescence P2.
     if (player != P1) return false;
 
     int x = GET_X(idx);
@@ -934,23 +906,19 @@ bool is_double_three(game *g, int idx, int player) {
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
 
-    g->board[idx] = player;
-    
+    // B4-FIX : utiliser check_free_three_pattern au lieu de evaluate_full_line.
+    // evaluate_full_line compte TOUTES les pierres dans la direction, y compris
+    // celles qui forment un three PRÉEXISTANT sans le coup en idx.
+    // Exemple : . X X . (3 pierres consécutives déjà là) → evaluate_full_line voit
+    // OPEN_THREE même si le coup en idx est à 3 cases de distance et n'y participe pas.
+    // check_free_three_pattern vérifie que idx fait PARTIE du pattern détecté → correct.
     int open_three_count = 0;
     
     for (int d = 0; d < 4; d++) {
-        // evaluate_full_line : bidirectionnel, compte les pierres des deux côtés
-        // de la case jouée. evaluate_line (unidirectionnel) ratait les patterns
-        // . X * X . où * est au centre du three.
-        int score = evaluate_full_line(g, x, y, dx[d], dy[d], player);
-        
-        // STRICTEMENT Open Three (pas Four)
-        if (score == OPEN_THREE) {
+        if (check_free_three_pattern(g, x, y, dx[d], dy[d], player)) {
             open_three_count++;
         }
     }
-    
-    g->board[idx] = EMPTY;
     
     // Exception: Capture annule l'interdiction
     if (open_three_count >= 2) {

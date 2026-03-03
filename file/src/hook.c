@@ -166,25 +166,34 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
                 }
                 // ----------------------------------------
 
-                // 1. Jouer le coup
-                gameData->board[idx] = gameData->turn;
-                
-                // 2. Dessiner
+                // APPLY_MOVE unifié : met à jour board, threat_counts, pos_score,
+                // current_hash (Zobrist), cand_list et captures en une seule passe.
+                // AVANT ce fix, le coup humain faisait board[idx]=turn directement
+                // sans update_impacted_scores → threat_counts/pos_score/hash périmés
+                // → l'IA voyait des menaces fantômes au tour suivant.
+                MoveUndo human_undo;
+                apply_move(gameData, idx, gameData->turn, &human_undo);
+
+                // Rendu graphique de la pierre posée
                 drawSquare(windows, cell_x, cell_y, gameData->turn);
-                
-                // 3. Gérer les captures
-                checkPieceCapture(gameData, windows, cell_x, cell_y);
-                
-                // --- AJOUT : VÉRIFICATION VICTOIRE IMMÉDIATE ---
+
+                // Rendu graphique des captures (pierres retirées)
+                if (human_undo.captured_count > 0) {
+                    for (int k = 0; k < human_undo.captured_count; k++) {
+                        int cap_idx = human_undo.captured_indices[k];
+                        drawSquare(windows, GET_X(cap_idx), GET_Y(cap_idx), EMPTY);
+                    }
+                }
+
+                // --- VÉRIFICATION VICTOIRE IMMÉDIATE ---
                 checkVictoryCondition(gameData);
                 if (gameData->game_over) {
-                    windows->changed = true; // Pour afficher le message de fin
-                    return; // ON ARRÊTE TOUT ICI, on ne change pas de tour !
+                    windows->changed = true;
+                    return;
                 }
                 // -----------------------------------------------
                 
-                // 4. Changer de tour
-                cand_rebuild(gameData); // Synchro candidate set après coup humain (bypass apply_move)
+                // Changer de tour
                 gameData->turn = (gameData->turn == P1) ? P2 : P1;
                 windows->changed = true;
             }

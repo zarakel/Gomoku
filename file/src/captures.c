@@ -126,23 +126,37 @@ int count_vulnerable_pairs_after_move(game *g, int idx, int player) {
     for (int d = 0; d < 4; d++) {
         int dx = dirs[d][0], dy = dirs[d][1];
         int x = GET_X(idx), y = GET_Y(idx);
-        
-        // Vérifier pattern : EMPTY - PLAYER - PLAYER - EMPTY
-        // (vulnérable car adversaire peut capturer en jouant aux extrémités)
-        int x_neg = x - dx, y_neg = y - dy;
-        int x_pos1 = x + dx, y_pos1 = y + dy;
-        int x_pos2 = x + 2*dx, y_pos2 = y + 2*dy;
-        
-        if (IS_VALID(x_neg, y_neg) && IS_VALID(x_pos2, y_pos2)) {
-            int idx_neg = GET_INDEX(x_neg, y_neg);
-            int idx_pos1 = GET_INDEX(x_pos1, y_pos1);
-            int idx_pos2 = GET_INDEX(x_pos2, y_pos2);
-            
-            // Pattern vulnérable
-            if (g->board[idx_neg] == EMPTY && 
-                g->board[idx_pos1] == player && 
-                g->board[idx_pos2] == EMPTY) {
-                vulnerable++;
+
+        // B2-FIX: Vérifier les patterns réellement vulnérables :
+        // Une paire est IMMÉDIATEMENT vulnérable si un côté est déjà bloqué par l'adversaire
+        // et l'autre côté est vide (l'adversaire peut jouer là au prochain coup).
+        //
+        // Pattern 1 : OPP - ME(idx) - ME(+1) - EMPTY
+        //   (adversaire sur la gauche, vide sur la droite = vulnérable)
+        {
+            int xm = x - dx, ym = y - dy;   // côté gauche
+            int xp1 = x + dx,  yp1 = y + dy;  // pierre alliée attendue
+            int xp2 = x + 2*dx, yp2 = y + 2*dy; // côté droit
+            if (IS_VALID(xm, ym) && IS_VALID(xp1, yp1) && IS_VALID(xp2, yp2)) {
+                if (g->board[GET_INDEX(xm,  ym )] == opponent &&
+                    g->board[GET_INDEX(xp1, yp1)] == player   &&
+                    g->board[GET_INDEX(xp2, yp2)] == EMPTY) {
+                    vulnerable++;
+                }
+            }
+        }
+        // Pattern 2 : EMPTY - ME(-1) - ME(idx) - OPP
+        //   (vide sur la gauche, adversaire sur la droite = vulnérable)
+        {
+            int xm2 = x - 2*dx, ym2 = y - 2*dy;
+            int xm1 = x - dx,   ym1 = y - dy;
+            int xp1 = x + dx,   yp1 = y + dy;
+            if (IS_VALID(xm2, ym2) && IS_VALID(xm1, ym1) && IS_VALID(xp1, yp1)) {
+                if (g->board[GET_INDEX(xm2, ym2)] == EMPTY    &&
+                    g->board[GET_INDEX(xm1, ym1)] == player   &&
+                    g->board[GET_INDEX(xp1, yp1)] == opponent) {
+                    vulnerable++;
+                }
             }
         }
     }

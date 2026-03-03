@@ -7,6 +7,7 @@ int killer_moves[MAX_DEPTH][2];               // Coups qui causent souvent des c
 int history_heuristic[MAX_BOARD];             // Historique de performance des coups
 long long debug_node_count = 0;               // Compteur de noeuds explores
 long long debug_cutoff_count = 0;             // Compteur de coupures alpha-beta
+int ia_last_depth = 0;                        // Dernière profondeur complétée par l'IA
 
 /**
  * Genere un nombre aleatoire 64-bit pour le hashing Zobrist.

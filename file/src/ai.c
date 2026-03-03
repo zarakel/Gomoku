@@ -66,16 +66,16 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
             int val;
             if (i == 0) {
                 // Premier coup : fenêtre pleine (candidat PV)
-                val = -minimax(g, depth - 1, -beta, -alpha, false, opponent_asp, start);
+                val = -negamax(g, depth - 1, -beta, -alpha, opponent_asp, start, true);
             } else {
                 // PVS : null-window d'abord (beaucoup moins coûteuse)
                 // Si le score dépasse alpha sans atteindre beta → on re-cherche en plein
                 // Gain : moves qui échouent alpha (cas fréquent avec bon ordering) coûtent
                 // ~2-3× moins cher qu'une recherche pleine.
-                val = -minimax(g, depth - 1, -alpha - 1, -alpha, false, opponent_asp, start);
+                val = -negamax(g, depth - 1, -alpha - 1, -alpha, opponent_asp, start, true);
                 if (val != TIMEOUT_CODE && val != -TIMEOUT_CODE
                     && val > alpha && val < beta) {
-                    val = -minimax(g, depth - 1, -beta, -alpha, false, opponent_asp, start);
+                    val = -negamax(g, depth - 1, -beta, -alpha, opponent_asp, start, true);
                 }
             }
 
@@ -223,16 +223,19 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         if (score == TIMEOUT_CODE) return (prev_best_move != -1) ? prev_best_move : best_move;
 
         prev_score = score;
+        ia_last_depth = depth;  // Track last completed depth
         last_depth_duration = elapsed - depth_start;
         printf("Depth %d complete. Score: %d | nodes: %lld (+%lld) | t: %.3fs\n",
                depth, score, debug_node_count, nodes_this_depth, elapsed);
 
-        // ASPIRATION GUARD : si le score est quasi-terminal (±WIN_SCORE ± 5000),
+        // ASPIRATION GUARD : si le score est quasi-terminal (±WIN_SCORE ± 50000),
         // ne pas l'utiliser comme centre de fenêtre pour la prochaine depth.
         // Un score quasi-terminal biaise la fenêtre aspiration → tous les coups
         // sont clampés au bord → depth suivante retourne le même biais en cascade.
+        // Seuil WIN_SCORE-50000 couvre WIN_SCORE±depth ET les quasi-terminaux
+        // d'evaluate_board (WIN_SCORE-1001 à WIN_SCORE-3501).
         // On force prev_score=0 pour garantir une fenêtre ouverte.
-        if (abs(score) >= WIN_SCORE - 5000) {
+        if (abs(score) >= WIN_SCORE - 50000) {
             prev_score = 0;
         }
 
@@ -380,9 +383,8 @@ void makeIaMove(game *gameData, screen *windows) {
     bool forcing_found = false;
     char *reason = "Minimax";
 
-    // Mise a jour des statistiques du plateau (scores, menaces)
-    refresh_board_stats(gameData);
-    
+    // Les statistiques du plateau (pos_score, threat_counts) sont maintenues
+    // incrémentalement par apply_move/undo_move — pas besoin de refresh_board_stats ici.
     // Calcul du niveau de crise (informatif uniquement, ne force plus les coups)
     update_crisis_state(gameData, ia_player);
 
@@ -452,24 +454,29 @@ void makeIaMove(game *gameData, screen *windows) {
     }
 
     // PHASE 2 : RECHERCHE TACTIQUE ET STRATEGIQUE
-    // Priorite 0 : Defense forcee multi-menaces (avant VCF/minimax)
-    // Fix2 : on déclenche find_best_defense_with_threat_space dès crisis_level >= 2
-    // quand crisis_immediate_win est true (l'adversaire gagne en 1 coup = urgence
-    // absolue, idem niveau 3). Minimax peut rater le bloc à D2/D4 si le signal
-    // est visible seulement à D10+ (observé dans logs : CRISE NIVEAU 2 sans
-    // THREAT SPACE → OPP-WIN-GUARD rattrapait en dernier recours).
-    // Pour niveau 2 sans immediate_win (open four seul sans coup gagnant direct),
-    // on garde le comportement précédent (minimax = plus flexible).
+    // Politique révisée — minimax n'est PLUS court-circuité pendant les crises.
+    //
+    // Ancien problème : defense_needed → forcing_found=true → minimax jamais exécuté
+    // → l'IA jouait en pure défense répétitive → perdait contre un joueur agressif
+    // qui créait une menace Open Four à chaque tour.
+    //
+    // Nouvelle politique :
+    //   1. Pré-calculer le coup défensif (fallback) via find_best_defense
+    //   2. Laisser minimax chercher le meilleur coup (attaque + défense intégrées)
+    //   3. Après minimax, valider que le coup choisi résout la crise
+    //   4. Si minimax échoue, substituer par le coup défensif pré-calculé
+    //
+    // Minimax bloque naturellement les Open Fours : ne pas bloquer = -WIN_SCORE
+    // à depth 1 (l'adversaire joue Five). C'est corrigé automatiquement par la
+    // recherche, sans besoin de forçage explicite.
     bool defense_needed = gameData->in_crisis &&
-        (gameData->crisis_level >= 3 ||
-         (gameData->crisis_level >= 2 && gameData->crisis_immediate_win));
+        (gameData->crisis_level >= 2 ||
+         (gameData->crisis_level >= 1 && gameData->crisis_immediate_win));
+    int precomputed_defense = -1;
     if (!forcing_found && defense_needed) {
-        int defense_move = find_best_defense_with_threat_space(gameData, ia_player);
-        if (defense_move != -1 && !is_double_three(gameData, defense_move, ia_player)) {
-            best_move = defense_move;
-            forcing_found = true;
-            reason = "Defense multi-menaces";
-        }
+        precomputed_defense = find_best_defense_with_threat_space(gameData, ia_player);
+        // NOTE: Ne PAS setter forcing_found — minimax doit chercher des contre-attaques.
+        // precomputed_defense sert de filet de sécurité post-minimax.
     }
 
     // Priorite 1 : VCF (sequences de menaces forcees menant a la victoire)
@@ -480,18 +487,14 @@ void makeIaMove(game *gameData, screen *windows) {
         // 1. crisis_immediate_win : adversaire gagne en 1 coup (alignement ou 5e capture)
         // 2. captures[opponent] >= 3 : 2 paires de plus = victoire par capture. VCF
         //    expose souvent des paires → suicidaire. Minimax gèrera défense + attaque.
-        // 3. crisis_level >= 2 : adversaire a un Open Four ou un coup gagnant. Même si
-        //    le danger immédiat vient d'être bloqué le tour dernier, le niveau de crise
-        //    actuel indique que l'adversaire reconstruit rapidement. VCF masquerait des
-        //    tours défensifs critiques.
-        // VCF est purement offensif : il ignore les contre-menaces adverses.
-        // Un closed_four adverse = l'adversaire est à 1 coup de créer un open four.
-        // Si VCF s'exécute pendant ce temps, l'adversaire peut construire un multi-threat
-        // en réponse (observé : 4 open fours simultanés après VCF (12,7) dans G2).
-        // Bloquer VCF quand opp a ≥1 closed four force minimax à gérer la menace d'abord.
+        // 3. opponent a ≥1 closed four : à 1 coup de créer un open four. VCF ignore
+        //    ce danger et pourrait jouer offensif pendant que l'adversaire promeut.
+        // Note : crisis_level >= 2 ne bloque PLUS VCF. VCF gère les positions où
+        // l'adversaire a un Open Four via son soundness check (defender_survives).
+        // Si VCF trouve un gain forcé, l'adversaire ne peut pas le stopper (même
+        // avec son Open Four, car VCF simule toutes les réponses défensives).
         bool vcf_blocked = gameData->crisis_immediate_win
                         || (gameData->captures[opponent] >= 3)
-                        || (gameData->in_crisis && gameData->crisis_level >= 2)
                         || (gameData->threat_counts[opponent][IDX_CLOSED_FOUR] >= 1);
         int vcf_move = !vcf_blocked ? find_winning_vcf(gameData, ia_player) : -1;
         if (vcf_move != -1 && !is_double_three(gameData, vcf_move, ia_player)) {
@@ -499,28 +502,28 @@ void makeIaMove(game *gameData, screen *windows) {
         } else {
             best_move = run_iterative_deepening(gameData, ia_player, start);
 
-            // RECOURS DÉFENSIF : si minimax retourne un coup en position quasi-perdue
-            // (score <= -(WIN_SCORE-3000)), tenter find_best_defense comme ultime recours.
-            // Minimax dans ces positions ne voit que des branches perdantes et peut choisir
-            // un coup arbitraire. find_best_defense peut trouver un blocage heuristique
-            // que minimax rate par manque de profondeur ou de beam.
-            // Guard : appeler seulement si crisis_level >= 1 (crise confirmée par update_crisis_state)
-            // pour éviter d'invoquer la défense inutilement en position normale.
-            if (best_move != -1 && gameData->in_crisis) {
-                // Récupérer le score du meilleur coup minimax via une éval rapide
-                gameData->board[best_move] = ia_player;
+            // RECOURS DÉFENSIF post-minimax : valider que minimax résout la crise.
+            // Si minimax choisit un coup qui laisse l'adversaire en position gagnante,
+            // substituer par le coup défensif pré-calculé.
+            if (best_move != -1 && defense_needed) {
+                MoveUndo rescue_undo;
+                apply_move(gameData, best_move, ia_player, &rescue_undo);
                 int mm_score = evaluate_board(gameData, ia_player);
-                gameData->board[best_move] = EMPTY;
-                if (mm_score <= -(WIN_SCORE - 3000)) {
-                    int def_rescue = find_best_defense_with_threat_space(gameData, ia_player);
-                    if (def_rescue != -1 && !is_double_three(gameData, def_rescue, ia_player)) {
-                        #ifdef DEBUG
-                        printf(">>> DEFENSE-RESCUE : minimax perdant (%d,%d) → defense (%d,%d)\n",
-                               GET_X(best_move), GET_Y(best_move), GET_X(def_rescue), GET_Y(def_rescue));
-                        #endif
-                        best_move = def_rescue;
-                        reason = "Defense recours";
-                    }
+                undo_move(gameData, ia_player, &rescue_undo);
+                // Déclencher sur :
+                //   a) Score très négatif (quasi-terminal perdant)
+                //   b) crisis_level >= 2 ET score négatif significatif
+                bool rescue_needed = (mm_score <= -(WIN_SCORE - 3000))
+                                  || (gameData->crisis_level >= 2 && mm_score <= -(WIN_SCORE - 50000));
+                if (rescue_needed && precomputed_defense != -1
+                    && !is_double_three(gameData, precomputed_defense, ia_player)) {
+                    #ifdef DEBUG
+                    printf(">>> DEFENSE-RESCUE : minimax (%d,%d) score=%d → defense (%d,%d)\n",
+                           GET_X(best_move), GET_Y(best_move), mm_score,
+                           GET_X(precomputed_defense), GET_Y(precomputed_defense));
+                    #endif
+                    best_move = precomputed_defense;
+                    reason = "Defense recours";
                 }
             }
 

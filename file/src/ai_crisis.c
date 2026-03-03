@@ -51,62 +51,55 @@ bool is_winning_threat(game *g, int idx, int opponent) {
  * Remplit threat_moves avec les indices des coups menacants (max 10).
  * Retourne le nombre de menaces detectees.
  */
+// A6-FIX: count_immediate_threats now also detects CLOSED_FOUR (not just OPEN_FOUR).
+// Returns open_four count in threat_moves[0..count-1].
+// Fills closed_four_moves[0..] separately (precursor threats).
+// closed_four_count is output-only (pass NULL to skip).
 static int count_immediate_threats(game *g, int opponent, int *threat_moves) {
     int count = 0;
-    
-    // Bounding box pour optimisation
-    int min_x = BOARD_SIZE, max_x = 0, min_y = BOARD_SIZE, max_y = 0;
-    bool empty = true;
-    
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] != EMPTY) {
-            empty = false;
-            int cx = GET_X(i); int cy = GET_Y(i);
-            if (cx < min_x) min_x = cx; if (cx > max_x) max_x = cx;
-            if (cy < min_y) min_y = cy; if (cy > max_y) max_y = cy;
-        }
-    }
-    
-    if (empty) return 0;
-    
-    min_x = (min_x - 2 < 0) ? 0 : min_x - 2;
-    max_x = (max_x + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_x + 2;
-    min_y = (min_y - 2 < 0) ? 0 : min_y - 2;
-    max_y = (max_y + 2 >= BOARD_SIZE) ? BOARD_SIZE - 1 : max_y + 2;
-    
-    // Scanner les coups adverses possibles
-    for (int y = min_y; y <= max_y; y++) {
-        for (int x = min_x; x <= max_x; x++) {
-            int idx = GET_INDEX(x, y);
-            if (g->board[idx] != EMPTY) continue;
-            
-            // Vérifier si ce coup crée une menace
-            g->board[idx] = opponent;
-            int score = get_point_score(g, x, y, opponent);
-            g->board[idx] = EMPTY;
-            
-            // Menace sérieuse : Open 4 ou mieux
-            if (score >= OPEN_FOUR) {
-                if (count < 10) {
-                    threat_moves[count++] = idx;
-                }
-                continue; // Déjà compté, pas besoin de checker captures
-            }
 
-            // Menace de capture : si adversaire a >= 3 paires et ce coup
-            // crée une capture (l'amenant à 4+), c'est une menace sérieuse
-            // qu'il faut inclure dans crisis_moves pour blocage préventif.
-            if (g->captures[opponent] >= 3) {
-                int caps = count_potential_captures(g, x, y, opponent);
-                if (caps >= 2 && g->captures[opponent] + (caps / 2) >= 4) {
-                    if (count < 10) {
-                        threat_moves[count++] = idx;
-                    }
-                }
+    if (g->cand_count == 0) return 0;
+
+    // B1-FIX : itération sur cand_list au lieu d'un scan bbox O(200-400).
+    // cand_list garantit exactement les cases EMPTY avec ≥1 voisin dist≤2,
+    // soit ~20-60 cases en mid-game — ×5-10 plus rapide que la bbox.
+    for (int ci = 0; ci < g->cand_count; ci++) {
+        int idx = g->cand_list[ci];
+        int x = GET_X(idx), y = GET_Y(idx);
+
+        // Vérifier si ce coup crée une menace
+        g->board[idx] = opponent;
+        int score = get_point_score(g, x, y, opponent);
+        g->board[idx] = EMPTY;
+
+        // Menace sérieuse : Open 4 ou mieux
+        if (score >= OPEN_FOUR) {
+            if (count < 10)
+                threat_moves[count++] = idx;
+            continue; // Déjà compté, pas besoin de checker captures
+        }
+
+        // A6-FIX: Menace précurseur : Closed Four (à 1 coup de devenir Open Four).
+        // Un Closed Four non bloqué = promotion garantie au tour suivant.
+        // On les met dans crisis_moves AUSSI pour que find_best_defense les évalue.
+        // Niveau <= CLOSED_FOUR non-dupliqué avec l'OPEN_FOUR ci-dessus.
+        if (score >= CLOSED_FOUR && count < 10) {
+            threat_moves[count++] = idx;
+            continue;
+        }
+
+        // Menace de capture : si adversaire a >= 3 paires et ce coup
+        // crée une capture (l'amenant à 4+), c'est une menace sérieuse
+        // qu'il faut inclure dans crisis_moves pour blocage préventif.
+        if (g->captures[opponent] >= 3) {
+            int caps = count_potential_captures(g, x, y, opponent);
+            if (caps >= 2 && g->captures[opponent] + (caps / 2) >= 4) {
+                if (count < 10)
+                    threat_moves[count++] = idx;
             }
         }
     }
-    
+
     return count;
 }
 
@@ -188,13 +181,29 @@ void update_crisis_state(game *g, int ia_player) {
         return;
     }
     
-    // 2. Check menaces fortes (Open 4)
-    int open_four_count = count_immediate_threats(g, opponent, g->crisis_moves);
-    g->crisis_move_count = open_four_count;
-    
+    // 2. Check menaces fortes (Open 4 et Closed 4)
+    // A6-FIX: count_immediate_threats collecte aussi les CLOSED_FOUR dans crisis_moves.
+    // On compte séparément : open_four purs (score >= OPEN_FOUR) pour le niveau de crise,
+    // et closed_four (CLOSED_FOUR <= score < OPEN_FOUR) pour l'avertissement précoce.
+    int all_threat_count = count_immediate_threats(g, opponent, g->crisis_moves);
+
+    // Distinguer open_fours (OPEN_FOUR+) des closed_fours en re-simulant les scores.
+    // On ne re-simule que pour les menaces collectées (max 10) — coût négligeable.
+    int open_four_count = 0;
+    int closed_four_count = 0;
+    for (int ti = 0; ti < all_threat_count; ti++) {
+        int idx = g->crisis_moves[ti];
+        g->board[idx] = opponent;
+        int sc = get_point_score(g, GET_X(idx), GET_Y(idx), opponent);
+        g->board[idx] = EMPTY;
+        if (sc >= OPEN_FOUR)  open_four_count++;
+        else                  closed_four_count++;
+    }
+    g->crisis_move_count = all_threat_count;
+
     if (open_four_count > 0) {
         g->in_crisis = true;
-        g->crisis_move_count = open_four_count;
+        g->crisis_move_count = all_threat_count;  // inclut aussi les closed_four pour que find_best_defense les évalue
         g->crisis_level = (open_four_count >= 2) ? 3 : 2;
 
         // P1-FIX: Si adversaire est aussi à captures >= 4, une contre-capture peut
@@ -230,7 +239,22 @@ void update_crisis_state(game *g, int ia_player) {
         #endif
         return;
     }
-    
+    if (closed_four_count > 0) {
+        // A6-FIX: Closed Four sans Open Four = précurseur urgent (niveau 1).
+        // L'adversaire peut promouvoir en Open Four ou Gapped Four en 1 seul coup.
+        // On déclenche la crise niveau 1 pour que DEFENSE-RESCUE soit disponible
+        // si minimax retourne un score perdant (-WIN_SCORE range).
+        g->in_crisis = true;
+        g->crisis_move_count = closed_four_count;
+        // Copier seulement les closed_four en tête de crisis_moves
+        // (les open_four étaient à zéro ici, donc les closed_four sont en tête)
+        g->crisis_level = 1;
+        #ifdef DEBUG
+        printf(">>> CRISE NIVEAU 1 : %d Closed Four adverses détectés (précurseur)\n", closed_four_count);
+        #endif
+        return;
+    }
+
     // 3. Check menaces moyennes (Open 3) -> AJOUT CRITIQUE ICI
     // Si aucune menace mortelle, on cherche les Open 3 pour les ajouter à la liste de crise
     int open_three_count = g->threat_counts[opponent][IDX_OPEN_THREE];
@@ -381,25 +405,35 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
     }
 
     // 2. Génération des candidats
+    // B5-FIX: au lieu de scanner MAX_BOARD=361 cases, on collecte d'abord les indices
+    // avec blocking_weights > 0, puis on itère uniquement sur eux.
+    // add_blocking_moves n'attribue du poids qu'aux cases EMPTY proches des menaces,
+    // donc blocking_weights > 0 sur ~20-50 cases maximum → ×7-18 plus rapide.
+    int hot_indices[MAX_BOARD];
+    int hot_count = 0;
+    for (int i = 0; i < MAX_BOARD; i++) {
+        if (blocking_weights[i] > 0 && g->board[i] == EMPTY)
+            hot_indices[hot_count++] = i;
+    }
+
     DefenseCandidate candidates[MAX_BOARD];
     int cand_count = 0;
     
-    for (int i = 0; i < MAX_BOARD; i++) {
-        if (g->board[i] == EMPTY && blocking_weights[i] > 0) {
-            // Rejet immédiat des coups illégaux
-            if (is_double_three(g, i, ia_player)) continue;
-            
-            candidates[cand_count].idx = i;
-            candidates[cand_count].blocked_threats = blocking_weights[i];
-            
-            // Score combiné : Poids du blocage + Potentiel offensif (contre-attaque)
-            g->board[i] = ia_player;
-            int atk = get_point_score(g, GET_X(i), GET_Y(i), ia_player);
-            g->board[i] = EMPTY;
-            
-            candidates[cand_count].combined_score = (blocking_weights[i] * 1000) + (atk / 100);
-            cand_count++;
-        }
+    for (int hi = 0; hi < hot_count; hi++) {
+        int i = hot_indices[hi];
+        // Rejet immédiat des coups illégaux
+        if (is_double_three(g, i, ia_player)) continue;
+        
+        candidates[cand_count].idx = i;
+        candidates[cand_count].blocked_threats = blocking_weights[i];
+        
+        // Score combiné : Poids du blocage + Potentiel offensif (contre-attaque)
+        g->board[i] = ia_player;
+        int atk = get_point_score(g, GET_X(i), GET_Y(i), ia_player);
+        g->board[i] = EMPTY;
+        
+        candidates[cand_count].combined_score = (blocking_weights[i] * 1000) + (atk / 100);
+        cand_count++;
     }
     
     if (cand_count == 0) return -1; // Aucun blocage légal trouvé

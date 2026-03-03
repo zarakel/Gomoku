@@ -52,7 +52,7 @@
 
 // Limites
 #define MAX_DEPTH 30
-#define TIME_LIMIT_MS 400 
+#define TIME_LIMIT_MS 490 
 
 // Valeurs cases
 #define EMPTY 0
@@ -212,6 +212,7 @@ extern int killer_moves[MAX_DEPTH][2];
 extern int history_heuristic[MAX_BOARD];
 extern long long debug_node_count;
 extern long long debug_cutoff_count;
+extern int ia_last_depth;
 
 // --- PROTOTYPES ---
 
@@ -249,6 +250,9 @@ void    refresh_board_stats(game *g);
 int     get_threat_level(int score);
 void    update_impacted_scores(game *g, int x, int y, bool remove_mode);
 
+// ai.c
+void    makeIaMove(game *gameData, screen *windows);
+
 // ai_data.c
 void    init_zobrist();
 void    clear_heuristics();
@@ -265,7 +269,7 @@ int     generate_moves(game *g, MoveCandidate *moves, int player, int depth, int
 int     check_capture_count(game *g, int idx, int player); // Helper temporaire
 
 // ai_search.c
-int     minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time);
+int     negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_time, bool null_allowed);
 
 // ai_threats.c
 int     evaluate_move_with_captures_full(game *g, int idx, int player);
@@ -274,7 +278,6 @@ int     count_serious_threats(game *g, int player);
 // ai_tactics.c (VCF)
 bool    has_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time);
 int     find_winning_vcf(game *g, int attacker);
-int     solve_defensive_crisis(game *g, int me);
 bool    check_five_align(game *g, int idx, int player);
 bool    is_move_capturable(game *g, int idx, int player);
 

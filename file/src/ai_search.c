@@ -94,16 +94,24 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     int original_alpha = alpha;
     TTEntry *entry = tt_probe(g->current_hash);
     if (entry != NULL && entry->depth >= depth) {
-        if (entry->flag == TT_EXACT) return entry->value;
-        else if (entry->flag == TT_LOWERBOUND) { 
-            if (entry->value > alpha) alpha = entry->value;
-        }
-        else if (entry->flag == TT_UPPERBOUND) { 
-            if (entry->value < beta) beta = entry->value;
-        }
-        if (alpha >= beta) {
-            debug_cutoff_count++;
-            return entry->value;
+        // Ne pas réutiliser les scores quasi-terminaux (WIN_SCORE ± depth et
+        // les quasi-terminaux d'evaluate_board comme WIN_SCORE-1001..WIN_SCORE-3501) :
+        // ces scores sont spécifiques à la position où ils ont été calculés.
+        // Le seuil WIN_SCORE-50000 exclut tous les quasi-terminaux connus
+        // (min = WIN_SCORE-3501 = 19996499) sans couper les scores normaux
+        // (plafonnés à < WIN_SCORE-1000 par evaluate_board).
+        if (abs(entry->value) < WIN_SCORE - 50000) {
+            if (entry->flag == TT_EXACT) return entry->value;
+            else if (entry->flag == TT_LOWERBOUND) { 
+                if (entry->value > alpha) alpha = entry->value;
+            }
+            else if (entry->flag == TT_UPPERBOUND) { 
+                if (entry->value < beta) beta = entry->value;
+            }
+            if (alpha >= beta) {
+                debug_cutoff_count++;
+                return entry->value;
+            }
         }
     }
 
@@ -290,7 +298,7 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
             // depth² favorise les cutoffs à haute profondeur (plus significatifs).
             if (idx >= 0 && idx < MAX_BOARD) {
                 history_heuristic[idx] += depth * depth;
-                if (history_heuristic[idx] > 20000) history_heuristic[idx] = 20000;
+                if (history_heuristic[idx] > 200000) history_heuristic[idx] = 200000;
             }
             tt_save(g->current_hash, depth, val, TT_LOWERBOUND, best_move);
             return val;
@@ -302,15 +310,14 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     }
 
     // Sauvegarde TT
-    if (best_val != TIMEOUT_CODE) {
+    // Guard : ne pas stocker les scores quasi-terminaux.
+    // Seuil WIN_SCORE-50000 couvre WIN_SCORE±depth ET les quasi-terminaux
+    // d'evaluate_board (WIN_SCORE-1001 à WIN_SCORE-3501).
+    if (best_val != TIMEOUT_CODE && abs(best_val) < WIN_SCORE - 50000) {
         int flag = TT_UPPERBOUND;
         if (best_val > original_alpha) flag = TT_EXACT;
         tt_save(g->current_hash, depth, best_val, flag, best_move);
     }
     
     return best_val;
-}
-
-int minimax(game *g, int depth, int alpha, int beta, bool maximizingPlayer, int ia_player, clock_t start_time) {
-    return negamax(g, depth, alpha, beta, ia_player, start_time, true);
 }

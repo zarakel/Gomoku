@@ -98,6 +98,7 @@ void cand_rebuild(game *g) {
 void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
+    int opponent = (player == P1) ? P2 : P1;
     
     // 1. Sauvegarde pour Undo
     undo->move_idx = idx;
@@ -105,60 +106,36 @@ void apply_move(game *g, int idx, int player, MoveUndo *undo) {
     undo->prev_captures[P2] = g->captures[P2];
 
     // 2. RETIRER L'ANCIEN ÉTAT (Avant de poser la pierre)
-    // On retire les scores des lignes qui passent par (x,y) car elles vont être modifiées/coupées
-    update_impacted_scores(g, x, y, true); // true = remove
+    update_impacted_scores(g, x, y, true);
 
     // 3. POSER LA PIERRE
     g->board[idx] = player;
     g->current_hash ^= zobrist_table[idx][player];
-    cand_on_place(g, idx);   // O(25) : mise à jour candidats
+    cand_on_place(g, idx);
     g->stone_count++;
 
-    // 4. AJOUTER LE NOUVEL ÉTAT (Positionnel pierre posée)
-    // On ajoute les nouveaux scores créés par cette pierre
-    update_impacted_scores(g, x, y, false); // false = add
-
-    // GESTION DES CAPTURES
-    // Detecte et applique les captures de paires adverses
-    // Une capture = 2 pierres adjacentes entourees par nos pierres
+    // 4. CAPTURES
     int captured_indices[10];
     int nb_cap = apply_captures_for_ai(g, x, y, player, captured_indices);
-    
     undo->captured_count = nb_cap;
-    
-    // Mise a jour du compteur de paires capturees
-    // nb_cap est en pierres individuelles, on divise par 2 pour obtenir les paires
-    if (nb_cap > 0) {
-        g->captures[player] += (nb_cap / 2);
-    }
-    // ---------------------------
 
-    for(int i=0; i<nb_cap; i++) {
-        undo->captured_indices[i] = captured_indices[i];
-        int cx = GET_X(captured_indices[i]);
-        int cy = GET_Y(captured_indices[i]);
-        
-        // La pierre capturée a été retirée par apply_captures_for_ai
-        // Mais nous devons mettre à jour le score incrémental autour d'elle !
-        
-        // Astuce : La pierre est DÉJÀ partie du plateau (EMPTY).
-        // Donc update_impacted_scores va voir du vide et calculer le score "post-capture".
-        // Il nous manque l'étape "retirer le score de la pierre adverse qui était là".
-        
-        // On remet temporairement la pierre adverse pour retirer son score proprement
-        int opponent = (player == P1) ? P2 : P1;
-        g->board[captured_indices[i]] = opponent;
-        
-        update_impacted_scores(g, cx, cy, true); // Retirer score adverse (mort)
-        
-        g->board[captured_indices[i]] = EMPTY;   // On l'enlève pour de bon
-        
-        update_impacted_scores(g, cx, cy, false); // Ajouter score du vide (nouvelles ouvertures potentielles)
-        cand_on_remove(g, captured_indices[i]);   // O(25) : la case redevient candidate
-        g->stone_count--;
-        
-        // Hash update (Capture)
-        g->current_hash ^= zobrist_table[captured_indices[i]][opponent];
+    if (nb_cap > 0) {
+        // Captures modifient la topologie du plateau : les pierres retirées
+        // par apply_captures_for_ai étaient encore présentes lors du step 2
+        // (remove). Les mettre à jour une-par-une crée des scores stale
+        // car chaque capture voit les autres dans un état partiellement modifié.
+        // Solution : recalcul complet (O(stone_count×4)) — correct et simple.
+        g->captures[player] += (nb_cap / 2);
+        for (int i = 0; i < nb_cap; i++) {
+            undo->captured_indices[i] = captured_indices[i];
+            cand_on_remove(g, captured_indices[i]);
+            g->stone_count--;
+            g->current_hash ^= zobrist_table[captured_indices[i]][opponent];
+        }
+        refresh_board_stats(g);
+    } else {
+        // Pas de capture : l'update incrémental classique est correct.
+        update_impacted_scores(g, x, y, false);
     }
 }
 
@@ -172,42 +149,36 @@ void undo_move(game *g, int player, MoveUndo *undo) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
     int opponent = (player == P1) ? P2 : P1;
+    bool had_captures = (undo->captured_count > 0);
 
-    // 1. ANNULER LES CAPTURES (D'abord, pour restaurer l'environnement)
-    if (undo->captured_count > 0) {
-         for(int i=0; i<undo->captured_count; i++) {
+    // 1. RESTAURER LES CAPTURES (ordre inverse)
+    if (had_captures) {
+        for (int i = undo->captured_count - 1; i >= 0; i--) {
             int c_idx = undo->captured_indices[i];
-            int cx = GET_X(c_idx);
-            int cy = GET_Y(c_idx);
-
-            // On retire le score actuel (vide)
-            update_impacted_scores(g, cx, cy, true);
-
-            // On remet la pierre adverse
             g->board[c_idx] = opponent;
             g->current_hash ^= zobrist_table[c_idx][opponent];
-            cand_on_place(g, c_idx);   // O(25)
+            cand_on_place(g, c_idx);
             g->stone_count++;
-
-            // On rajoute son score restauré
-            update_impacted_scores(g, cx, cy, false);
         }
     }
     g->captures[player] = undo->prev_captures[player];
     g->captures[opponent] = undo->prev_captures[opponent];
 
     // 2. RETIRER LA PIERRE JOUÉE
-    // On retire son score actuel
-    update_impacted_scores(g, x, y, true);
+    if (!had_captures)
+        update_impacted_scores(g, x, y, true);
 
     g->board[idx] = EMPTY;
     g->current_hash ^= zobrist_table[idx][player];
-    cand_on_remove(g, idx);   // O(25)
+    cand_on_remove(g, idx);
     g->stone_count--;
 
-    // 3. RESTAURER L'ÉTAT DU VIDE
-    // On remet les scores tels qu'ils étaient quand c'était vide
-    update_impacted_scores(g, x, y, false);
+    if (!had_captures)
+        update_impacted_scores(g, x, y, false);
+
+    // 3. Si captures : recalcul complet (symétrique avec apply_move)
+    if (had_captures)
+        refresh_board_stats(g);
 }
 
 /**

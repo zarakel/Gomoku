@@ -24,8 +24,8 @@ LGLFW_PATH  := /usr/lib/x86_64-linux-gnu
 LIBS        := $(MLX_DIR)/build/libmlx42.a -ldl -lglfw -pthread -lm -L$(LGLFW_PATH)
 
 # --- Sources & Objects ---
-# Trouve tous les .c dans src/file
-SRCS        := $(shell find $(SRC_DIR) -iname "*.c")
+# Trouve tous les .c dans src/file (exclut cli_test.c qui a son propre main)
+SRCS        := $(shell find $(SRC_DIR) -iname "*.c" ! -name "cli_test.c")
 
 # Crée la liste des objets dans obj/ en gardant la structure ou en aplanissant
 # Ici, on remplace le chemin SRC_DIR par OBJ_DIR
@@ -75,6 +75,21 @@ git: fclean
 	git add .
 	git commit -m "auto commit"
 	git push
+
+# CLI Test target (no graphics, stubs MLX functions)
+TEST_CLI_SRCS := file/src/cli_test.c \
+                 file/src/ai.c file/src/ai_logic.c file/src/ai_search.c \
+                 file/src/ai_moves.c file/src/ai_tactics.c file/src/ai_data.c \
+                 file/src/ai_crisis.c file/src/ai_captures.c file/src/ai_threats.c \
+                 file/src/ai_multi_threat.c file/src/heuristics.c file/src/captures.c \
+                 file/src/victory.c file/src/timer.c
+
+test_cli:
+	@$(CC) -Ofast -g -DDEBUG=1 -I$(INC_DIR) -I$(MLX_DIR)/include \
+		$(TEST_CLI_SRCS) \
+		$(MLX_DIR)/build/libmlx42.a -ldl -lglfw -pthread -lm -L$(LGLFW_PATH) \
+		-o gomoku_test
+	@printf "✅ Built: gomoku_test (CLI test harness)\n"
 
 brew:
 	brew install glfw
