@@ -125,14 +125,7 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
     int opponent = (player == P1) ? P2 : P1;
 
     if (depth <= 0) {
-        // QS depth adaptatif : 3 si des menaces actives existent, 2 sinon.
-        // En position calme (pas de OPEN_THREE ni CLOSED_FOUR sur le plateau),
-        // qs=3 génère ~8× plus de nœuds qu'qs=2 pour zéro gain de qualité.
-        // qs=2 libère ~60% du budget QS en position calme → budget redistribué
-        // vers des ply supplémentaires en minimax.
-        // Guard : on garde qs=3 dès qu'un OPEN_THREE ou CLOSED_FOUR est présent
-        // (position tactiquement instable) pour éviter l'effet d'horizon.
-        // QS depth = 2 fixe : l'ancien adaptif (2/3) coûtait ~5× plus de nœuds QS
+        // QS depth = 2 fixe : l'ancien qs adaptif (2/3) coûtait ~5× plus de nœuds QS
         // en position tactique, ce qui empêchait d'atteindre D10+ en mid-game dense.
         // Avec beam réduit + LMR agressif, QS=2 suffit pour capter les tactiques
         // immédiates (captures + menaces CLOSED_THREE+) sans exploser le budget.
@@ -235,7 +228,6 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
                 return TIMEOUT_CODE;
             }
         } else {
-            // LMR
             // LMR : réduction des coups tardifs calmes pour libérer du budget.
             // R=1 depth>=3 i>=4 : coups calmes sans menace CLOSED_THREE.
             //       Avant : depth>=4 i>=6. Gain : ~30% nœuds en moins à depth 3-4.
@@ -259,9 +251,7 @@ int negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_t
 
             // LMR standard : si la recherche réduite bat alpha, on confirme
             // directement avec full-depth + full-window.
-            // L'ancien code faisait : null(d-1-R) → null(d-1) → full(d-1) (3 recherches).
-            // Ici :                    null(d-1-R) → full(d-1) (2 recherches).
-            // La null-window intermédiaire à depth-1 était redondante :
+            // null(d-1-R) → full(d-1) (2 recherches).
             // si val > alpha au depth réduit, la seule information utile est
             // le score exact à depth plein — la null-window ne donne pas ce score.
             if (val > alpha && val < beta) {

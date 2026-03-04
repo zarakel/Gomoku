@@ -647,7 +647,7 @@ int evaluate_board(game *g, int player) {
     // 3a2. QUASI-TERMINAL : UN SEUL Open Four adverse
     // Un open four (4 pierres, 2 bouts ouverts) = l'adversaire joue l'un des 2 bouts
     // et gagne. Le joueur courant ne peut bloquer qu'un seul bout, l'autre reste ouvert.
-    // SAUF SI on peut capturer une pierre de l'alignement (Gomoku avec captures).
+    // SAUF SI on peut capturer une pierre de l'alignement.
     // → Quasi-terminal car la défense par capture est rare et spécifique.
     // Score -WIN_SCORE+1501 : plus grave que double closed four (-2001) car c'est
     // un coup plus proche de la victoire, mais moins que double open four (-1001).
@@ -668,11 +668,6 @@ int evaluate_board(game *g, int player) {
     // 1 Open Three + 1 Closed Four = l'adversaire peut jouer un coup qui crée
     // SIMULTANÉMENT un Open Four depuis le Closed Four ET prolonge l'Open Three —
     // résultat : 2 Open Fours en 1 coup (fourchette irrémédiable).
-    // Observé dans les logs : AI score +20M à D8, adversaire joue ce combo → CRISE 3.
-    // Ce quasi-terminal (-WIN_SCORE+2500) est plus urgent que double Closed Four
-    // seul (-WIN_SCORE+2001 = légèrement moins grave car 2 coups nécessaires).
-    // Seuil 2500 > 2001 : placé ENTRE double-closed-four et double-open-four
-    // dans la hiérarchie, correctement en-dessous de double-open-four (1001).
     int opp_open_threes_pre = g->threat_counts[opponent][IDX_OPEN_THREE];
     int my_open_threes_pre  = g->threat_counts[player][IDX_OPEN_THREE];
     if (opp_closed_fours >= 1 && opp_open_threes_pre >= 1) return -(WIN_SCORE - 2500);
@@ -734,48 +729,14 @@ int evaluate_board(game *g, int player) {
         total += (long long)(my_open_threes - 1) * OPEN_FOUR;
     }
 
-    // 4c. MALUS PRÉ-FOURCHETTE : Open Three + Closed Four
-    // Désormais géré par quasi-terminal 3b2 (retour anticipé).
-    // Ces cas ne devraient plus atteindre cette section du code.
-    // Conservé comme garde de sécurité uniquement.
-    // (intentionnellement vide : le quasi-terminal rend ce calcul redondant)
-
     // 4d. MALUS DOUBLE-EXTENSION LATENTE (2+ Closed Threes en directions distinctes)
     int opp_closed_threes = g->threat_counts[opponent][IDX_CLOSED_THREE];
     int my_closed_threes  = g->threat_counts[player][IDX_CLOSED_THREE];
     if (opp_closed_threes >= 2) total -= (long long)(opp_closed_threes - 1) * OPEN_THREE;
     if (my_closed_threes  >= 2) total += (long long)(my_closed_threes  - 1) * OPEN_THREE;
 
-    // 4d3. MALUS RÉSEAU MULTI-CLOSED-THREE (3+ closed threes simultanés)
-    // 3+ closed_threes = réseau convergent précurseur de 4+ open_fours en 2 coups.
-    // Observé dans logs partie 3 : l'IA score +28K pendant que l'humain construit
-    // ce réseau, puis explosion à 4 open_fours. Le malus 4d (2× OPEN_THREE = 4M)
-    // est compensé par le pos_score offensif → balance vue comme +28K.
-    // Pénalité additionnelle OPEN_FOUR (10M) pour les cas >= 3 : rend la position
-    // quasi-terminale pour minimax qui préférera bloquer la construction.
-    // Guard : seulement si aucun open_four adverse déjà présent (quasi-terminal 3a déjà actif).
-    if (opp_closed_threes >= 3 && opp_open_fours == 0)
-        total -= (long long)OPEN_FOUR;
-    if (my_closed_threes  >= 3 && my_open_fours  == 0)
-        total += (long long)OPEN_FOUR;
-
-    // 4d3. NOTE : le malus "réseau multi-fork latent" (opp_open_threes>=1 + opp_closed_threes>=2)
-    // a été testé à plusieurs reprises (OPEN_FOUR=10M, WIN_SCORE-4001 quasi-terminal,
-    // OPEN_THREE*3=6M) et cause systématiquement des régressions :
-    // - Valeur trop forte : franchit le plafonnement WIN_SCORE-1001 en cumul avec 4d+4d2
-    // - Valeur trop faible : invisible face à un score offensif de +20M
-    // - Asymétrique mais garde (stone_count>=10) insuffisante : déclenche sur positions normales
-    // La protection contre ce pattern est correctement gérée par :
-    //   ai.c : WIN-OVERRIDE SUPPRESSED (opp_network guard)
-    //   ai_moves.c : beam extension network_threat (+1/+2 cap 12/14)
-    // Ces mécanismes opèrent au niveau de la recherche (pas du scoring statique) et
-    // n'ont pas d'effets de bord sur l'aspiration search ni sur le pruning.
-
     // 4d2. MALUS PRÉ-FOURCHETTE COMBINÉ : Open Two + Closed Three adverses simultanés
-    // 2+ OPEN_TWO seuls = paires isolées, peut être notre propre construction offensive.
-    // Le pénaliser symétriquement bruitait les positions offensives légitimes (régression
-    // observée : l'IA abandonnait ses propres structures en cours).
-    // Condition stricte : OPEN_TWO >= 2 ET CLOSED_THREE >= 1 simultanément = l'adversaire
+    // Condition : OPEN_TWO >= 2 ET CLOSED_THREE >= 1 simultanément = l'adversaire
     // a des paires EN COURS de devenir des menaces, pas juste 2 paires isolées.
     // Pénalité ciblée OPEN_THREE (2M) : visible mais n'écrase pas les terminaux.
     {
@@ -788,6 +749,17 @@ int evaluate_board(game *g, int player) {
         int my_cls_threes  = g->threat_counts[player][IDX_CLOSED_THREE];
         if (my_open_twos >= 2 && my_cls_threes >= 1)
             total += (long long)OPEN_THREE;
+
+    // 4d3. MALUS RÉSEAU MULTI-CLOSED-THREE (3+ closed threes simultanés)
+    // 3+ closed_threes = réseau convergent précurseur de 4+ open_fours en 2 coups.
+    // Pénalité additionnelle OPEN_FOUR (10M) pour les cas >= 3 : rend la position
+    // quasi-terminale pour minimax qui préférera bloquer la construction.
+    // Guard : seulement si aucun open_four adverse déjà présent (quasi-terminal 3a déjà actif).
+    if (opp_closed_threes >= 3 && opp_open_fours == 0)
+        total -= (long long)OPEN_FOUR;
+    if (my_closed_threes  >= 3 && my_open_fours  == 0)
+        total += (long long)OPEN_FOUR;
+
     }
 
     // 4e. MALUS CAPTURES AVANCÉES (3 paires)
@@ -797,7 +769,7 @@ int evaluate_board(game *g, int player) {
     // totalement invisible face aux scores offensifs (OPEN_FOUR=10M, OPEN_THREE=2M).
     // Sans cette pénalité forte, minimax ne voit pas de différence entre une position
     // à 3 captures adverses exposée et une position sûre → continue de jouer offensif
-    // en offrant la 4e paire. Ce bug causait la défaite G1 (open four recréé 3 fois).
+    // en offrant la 4e paire.
     if (opp_caps >= 3) total -= (long long)OPEN_FOUR * 2;
     if (my_caps  >= 3) total += (long long)OPEN_FOUR * 2;
 
