@@ -46,21 +46,17 @@ bool is_winning_threat(game *g, int idx, int opponent) {
  * Compte les menaces immediates serieuses de l'adversaire.
  * 
  * Scanne la bounding box autour des pierres existantes.
- * Detecte les coups adverses qui creent des menaces OPEN_FOUR ou superieures.
+ * Detecte les coups adverses qui creent des menaces CLOSED_FOUR, OPEN_FOUR ou superieures.
  * 
  * Remplit threat_moves avec les indices des coups menacants (max 10).
  * Retourne le nombre de menaces detectees.
  */
-// A6-FIX: count_immediate_threats now also detects CLOSED_FOUR (not just OPEN_FOUR).
-// Returns open_four count in threat_moves[0..count-1].
-// Fills closed_four_moves[0..] separately (precursor threats).
-// closed_four_count is output-only (pass NULL to skip).
 static int count_immediate_threats(game *g, int opponent, int *threat_moves) {
     int count = 0;
 
     if (g->cand_count == 0) return 0;
 
-    // B1-FIX : itération sur cand_list au lieu d'un scan bbox O(200-400).
+    // itération sur cand_list au lieu d'un scan bbox O(200-400).
     // cand_list garantit exactement les cases EMPTY avec ≥1 voisin dist≤2,
     // soit ~20-60 cases en mid-game — ×5-10 plus rapide que la bbox.
     for (int ci = 0; ci < g->cand_count; ci++) {

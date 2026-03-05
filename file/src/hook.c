@@ -54,6 +54,7 @@ void cursor(double xpos, double ypos, void *param)
  * Touches gerees :
  * - ESC : Ferme la fenetre
  * - SPACE : Active/desactive le mode IA
+ * - H : Affiche un hint (le meilleur coup pour le joueur humain)
  */
 void keyhook(mlx_key_data_t keydata, void *param)
 {
@@ -130,7 +131,7 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
             windows->y >= BTN_Y && windows->y <= BTN_Y + BTN_H)
         {
             resetGame(gameData, windows);
-            return; // On arrête là, on ne pose pas de pion !
+            return;
         }
     }
 
@@ -191,17 +192,13 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
 
                     if (caps == 0) {
                         printf("COUP INTERDIT : Double-Three !\n");
-                        explain_double_three(gameData, idx, gameData->turn); // Pour le debug
+                        explain_double_three(gameData, idx, gameData->turn);
                         return; // On sort, le coup n'est pas joué
                     }
                 }
-                // ----------------------------------------
 
                 // APPLY_MOVE unifié : met à jour board, threat_counts, pos_score,
                 // current_hash (Zobrist), cand_list et captures en une seule passe.
-                // AVANT ce fix, le coup humain faisait board[idx]=turn directement
-                // sans update_impacted_scores → threat_counts/pos_score/hash périmés
-                // → l'IA voyait des menaces fantômes au tour suivant.
                 MoveUndo human_undo;
                 apply_move(gameData, idx, gameData->turn, &human_undo);
 

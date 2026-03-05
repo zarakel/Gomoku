@@ -36,16 +36,8 @@ void printInformation(screen *windows, game *gameData)
         gameData->ia_timer.elapsed
     );
 
-    // 3. Création de la nouvelle image de texte
-    // (x: 10, y: 5) pour l'afficher en haut à gauche
-    
-    // AJOUT : Affichage du label sur le bouton (Position ajustée à vue d'oeil)
-    // On doit utiliser une autre image ou réutiliser le put_string, 
-    // mais MLX42 gère chaque string comme une image. 
-    // Pour faire simple, on ajoute un 2ème put_string.
-    // Note: Pour faire propre, il faudrait stocker ce pointeur aussi pour le delete,
-    // mais ici on va simplifier.
+    // 3. Création de la nouvelle image de texte    
     windows->text_img = mlx_put_string(windows->mlx, info_buffer, 10, 5);
-//    mlx_put_string(windows->mlx, "RESTART", BTN_X + 10, BTN_Y + 5);
+    mlx_put_string(windows->mlx, "RESTART", BTN_X + 7, BTN_Y + 2);
 
 }
