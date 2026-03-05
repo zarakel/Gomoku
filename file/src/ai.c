@@ -326,6 +326,46 @@ static void finalize_move(game *g, screen *win, int move_idx, int player, clock_
 }
 
 /**
+ * Calcule le meilleur coup pour le joueur donne sans l'appliquer.
+ * Utilise le meme pipeline que l'IA (opening book, minimax iteratif).
+ * Retourne l'index du coup suggere, ou -1 si aucun coup valide.
+ */
+int computeHintMove(game *g, int player) {
+    clock_t start = clock();
+
+    // Opening book
+    if (g->stone_count <= 1) {
+        int center = GET_INDEX(9, 9);
+        if (g->board[center] == EMPTY) return center;
+        int adj[] = { GET_INDEX(9,8), GET_INDEX(10,9), GET_INDEX(8,9), GET_INDEX(9,10),
+                      GET_INDEX(10,8), GET_INDEX(10,10), GET_INDEX(8,8), GET_INDEX(8,10) };
+        for (int j = 0; j < 8; j++) {
+            if (g->board[adj[j]] == EMPTY && !is_double_three(g, adj[j], player))
+                return adj[j];
+        }
+    }
+
+    // Coup force : victoire immediate ou blocage
+    MoveCandidate moves[MAX_BOARD];
+    int count = generate_moves(g, moves, player, 0, -1);
+    if (count == 0) return -1;
+    if (moves[0].score_estim >= SORT_WIN_IMMEDIATE) return moves[0].index;
+
+    // Recherche minimax complete
+    update_crisis_state(g, player);
+    int best = run_iterative_deepening(g, player, start);
+
+    // Fallback sur le meilleur coup statique
+    if (best == -1 || is_double_three(g, best, player)) {
+        for (int i = 0; i < count; i++) {
+            if (!is_double_three(g, moves[i].index, player))
+                return moves[i].index;
+        }
+    }
+    return best;
+}
+
+/**
  * Point d'entree principal pour le calcul du coup de l'IA.
  * 
  * Strategie en 2 phases :

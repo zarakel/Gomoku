@@ -49,6 +49,7 @@ bool initialized(void *args, screen *windows, game *gameData)
     gameData->iaTurn = 2; // 0 = Pas d'IA, sinon 1 ou 2
     gameData->turn = P1;  // P1 commence toujours
     gameData->game_over = false;
+    gameData->hint_idx = -1;
 
     // Timer Init
     gameData->ia_timer.elapsed = 0.0;
@@ -141,7 +142,7 @@ void gameLoop(void *param)
         }
 
         checkVictoryCondition(gameData);
-        // Note: Le changement de tour Humain se fait généralement dans le mousehook
+        // Le changement de tour Humain se fait généralement dans le mousehook
         windows->changed = false;
     }
 

@@ -58,6 +58,7 @@
 #define EMPTY 0
 #define P1 1
 #define P2 2
+#define HINT 3
 #define PREVIS 3
 
 // --- MACROS ---
@@ -170,6 +171,7 @@ typedef struct game {
     int     cand_count;               // Taille de cand_list
     int     cand_pos[MAX_BOARD];      // Position de chaque case dans cand_list (O(1) remove)
     int     stone_count;              // Nb de pierres sur le plateau (maintenu incrémentalement)
+    int     hint_idx;                 // Case du hint affiché (-1 = aucun)
 } game;
 
 typedef struct both {
@@ -250,6 +252,7 @@ void    update_impacted_scores(game *g, int x, int y, bool remove_mode);
 
 // ai.c
 void    makeIaMove(game *gameData, screen *windows);
+int     computeHintMove(game *g, int player);
 
 // ai_data.c
 void    init_zobrist();

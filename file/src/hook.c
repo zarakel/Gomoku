@@ -74,9 +74,34 @@ void keyhook(mlx_key_data_t keydata, void *param)
         // Si 0 -> Devient P2 (IA joue les Blancs/O)
         // Si non 0 -> Devient 0 (Humain vs Humain)
         gameData->iaTurn = (gameData->iaTurn == 0) ? P2 : 0;
+        // Effacer le hint si affiché (changement de mode)
+        if (gameData->hint_idx != -1) {
+            drawSquare(windows, GET_X(gameData->hint_idx), GET_Y(gameData->hint_idx), EMPTY);
+            gameData->hint_idx = -1;
+        }
         #ifdef DEBUG
             printf("IA Mode: %s\n", gameData->iaTurn ? "ON (Player 2)" : "OFF");
         #endif
+    }
+    // Hint : demander à l'IA le meilleur coup pour le joueur humain
+    if (keydata.key == MLX_KEY_H && keydata.action == MLX_PRESS)
+    {
+        if (gameData->game_over) return;
+        if (isIaTurn(gameData->iaTurn, gameData->turn)) return;
+
+        // Effacer le hint précédent si affiché
+        if (gameData->hint_idx != -1) {
+            drawSquare(windows, GET_X(gameData->hint_idx), GET_Y(gameData->hint_idx), EMPTY);
+            gameData->hint_idx = -1;
+        }
+
+        int hint = computeHintMove(gameData, gameData->turn);
+        if (hint != -1) {
+            gameData->hint_idx = hint;
+            drawSquare(windows, GET_X(hint), GET_Y(hint), HINT);
+            windows->changed = true;
+            printf("[HINT] (%d,%d)\n", GET_X(hint), GET_Y(hint));
+        }
     }
 }
 
@@ -143,6 +168,12 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
     {
         if (!gameData->game_over)
         {
+            // Effacer le hint avant de poser la pierre
+            if (gameData->hint_idx != -1) {
+                drawSquare(windows, GET_X(gameData->hint_idx), GET_Y(gameData->hint_idx), EMPTY);
+                gameData->hint_idx = -1;
+            }
+
             // Vérification case vide via Index 1D
             int idx = GET_INDEX(cell_x, cell_y);
             
