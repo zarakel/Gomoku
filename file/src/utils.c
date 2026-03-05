@@ -16,10 +16,6 @@ void resetGame(game *gameData, screen *windows)
     gameData->game_over = false;
     gameData->winner = 0;
     
-    gameData->score[0] = 0;
-    gameData->score[P1] = 0;
-    gameData->score[P2] = 0;
-    
     memset(gameData->pos_score, 0, sizeof(gameData->pos_score));
     memset(gameData->threat_counts, 0, sizeof(gameData->threat_counts));
     memset(gameData->max_threat_level, 0, sizeof(gameData->max_threat_level));

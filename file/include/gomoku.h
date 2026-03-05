@@ -146,7 +146,6 @@ typedef struct timer {
 typedef struct game {
     int     board[MAX_BOARD];
     int     captures[3];
-    int     score[3];
     int     board_size;
     int     turn;
     int     iaTurn;
@@ -182,7 +181,6 @@ typedef struct {
     int move_idx;
     int captured_indices[10];
     int captured_count;
-    int prev_score[3];
     int prev_captures[3];
 } MoveUndo;
 
@@ -228,13 +226,13 @@ void    mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void
 void    launchTimer(timer *t);
 void    resetTimer(timer *t);
 bool    isIaTurn(int iaTurn, int turn);
+void    resetGame(game *gameData, screen *windows);
 void    printInformation(screen *windows, game *gameData);
 void    checkVictoryCondition(game *gameData);
 
 // captures.c
 // Note: On unifie le nom ici pour éviter les conflits
 int     count_potential_captures(game *g, int lx, int ly, int player); 
-void    checkPieceCapture(game *gameData, screen *windows, int lx, int ly);
 int     apply_captures_for_ai(game *g, int lx, int ly, int player, int *captured_indices_buffer);
 int     count_vulnerable_pairs(game *g, int player);
 int     find_capture_move(game *g, int player);
@@ -266,14 +264,11 @@ void    cand_rebuild(game *g);
 
 // ai_moves.c
 int     generate_moves(game *g, MoveCandidate *moves, int player, int depth, int tt_best_move);
-int     check_capture_count(game *g, int idx, int player); // Helper temporaire
 
 // ai_search.c
 int     negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_time, bool null_allowed);
 
-// ai_threats.c
-int     evaluate_move_with_captures_full(game *g, int idx, int player);
-int     count_serious_threats(game *g, int player);
+// ai_threats.c (dead code removed)
 
 // ai_tactics.c (VCF)
 bool    has_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time);
@@ -289,7 +284,6 @@ int     count_created_threats(game *g, int idx, int player);
 
 // ai_captures.c
 int     find_best_capture_move(game *g, int player);
-int     compute_capture_danger(game *g, int opponent, int *best_idx);
 
 // ai_crisis.c
 void    update_crisis_state(game *g, int ia_player);

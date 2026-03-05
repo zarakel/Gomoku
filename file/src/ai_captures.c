@@ -135,46 +135,4 @@ int find_best_capture_move(game *g, int player) {
     return best_move;
 }
 
-/**
- * Calcule le niveau de danger des captures adverses.
- * 
- * Simule tous les coups adverses possibles et detecte les captures potentielles.
- * Priorite maximale si l'adversaire peut gagner par capture (4 paires deja capturees).
- * 
- * Remplit best_idx avec l'index du coup de capture le plus dangereux.
- * Retourne un score de danger comparable aux scores d'alignement.
- */
-int compute_capture_danger(game *g, int opponent, int *best_idx) {
-    int opp_caps = g->captures[opponent];
-    int best_capture_idx = -1;
-    int best_capture_score = 0;
-    
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
-        
-        g->board[idx] = opponent;
-        int caps = count_potential_captures(g, GET_X(idx), GET_Y(idx), opponent);
-        g->board[idx] = EMPTY;
-        
-        if (caps >= 2) {
-            int future_total = opp_caps + (caps / 2);
-            int danger = 0;
-            
-            if (future_total >= 5) danger = WIN_SCORE;
-            else if (future_total >= 4) danger = OPEN_FOUR;
-            else if (future_total >= 3) danger = CLOSED_FOUR;
-            else if (future_total >= 2) danger = OPEN_THREE;
-            
-            if (danger > best_capture_score) {
-                best_capture_score = danger;
-                best_capture_idx = idx;
-            }
-        }
-    }
-    
-    if (best_idx != NULL) {
-        *best_idx = best_capture_idx;
-    }
-    
-    return best_capture_score;
-}
+/* Dead code removed: compute_capture_danger */

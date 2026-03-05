@@ -174,10 +174,10 @@ void mousehook(mouse_key_t button, action_t action, modifier_key_t mods, void *p
                 MoveUndo human_undo;
                 apply_move(gameData, idx, gameData->turn, &human_undo);
 
-                // Log du coup humain pour analyse post-partie
-                printf("🧑 [Human P%d] (%d, %d)", gameData->turn, cell_x, cell_y);
+                // Log du coup humain
+                printf("[Human P%d] (%d,%d)", gameData->turn, cell_x, cell_y);
                 if (human_undo.captured_count > 0)
-                    printf(" [Capture %d pierres, total=%d paires]",
+                    printf(" [Cap %d, total=%d]",
                            human_undo.captured_count,
                            gameData->captures[gameData->turn]);
                 printf("\n");

@@ -1,71 +1,6 @@
 #include "../include/gomoku.h"
 
 /**
- * Detecte les patterns gappes (4 pierres + 1 trou) dans une ligne.
- * 
- * Patterns recherches :
- * - X_XXX : 4 pierres avec 1 trou au milieu
- * - XX_XX, XXX_X, etc. : toutes les positions du trou
- * 
- * Retourne l'index du trou, ou -1 si aucun pattern trouve.
- * Scanne toutes les fenetres de 5 cases possibles autour de (x,y).
- */
-static int find_gap_in_line(game *g, int x, int y, int dx, int dy, int player) {
-    int opponent = (player == P1) ? P2 : P1;
-    
-    // Construire un buffer de 9 cases centré sur (x,y)
-    int line[9];
-    int indices[9];
-    
-    for (int k = -4; k <= 4; k++) {
-        int nx = x + dx * k;
-        int ny = y + dy * k;
-        int buf_idx = k + 4;
-        
-        if (IS_VALID(nx, ny)) {
-            indices[buf_idx] = GET_INDEX(nx, ny);
-            line[buf_idx] = g->board[indices[buf_idx]];
-        } else {
-            indices[buf_idx] = -1;
-            line[buf_idx] = opponent; // Hors plateau = bloqué
-        }
-    }
-    
-    // Chercher les patterns gappés de 4 pierres dans TOUTES les fenêtres de 5
-    for (int start = 0; start <= 4; start++) {
-        // Vérifier que les indices sont valides
-        if (indices[start] == -1 || indices[start + 4] == -1) continue;
-        
-        // Compter les pierres et trouver le trou
-        int stones = 0;
-        int hole_pos = -1;
-        int hole_count = 0;
-        bool blocked = false;
-        
-        for (int i = 0; i < 5; i++) {
-            if (line[start + i] == player) {
-                stones++;
-            } else if (line[start + i] == EMPTY) {
-                hole_count++;
-                hole_pos = start + i;
-            } else {
-                blocked = true;
-                break;
-            }
-        }
-        
-        // Pattern valide : 4 pierres + 1 trou = Gapped Four !
-        if (!blocked && stones == 4 && hole_count == 1 && hole_pos != -1) {
-            if (indices[hole_pos] != -1) {
-                return indices[hole_pos];
-            }
-        }
-    }
-    
-    return -1;
-}
-
-/**
  * Convertit un score numerique en niveau de menace categorique.
  * 
  * Niveaux :
@@ -145,158 +80,8 @@ void refresh_board_stats(game *g) {
     }
 }
 /**
- * Trouve la case critique d'un gapped four pour un joueur.
- * 
- * Un gapped four est un pattern X_XXX ou XXX_X qui devient victoire si le trou est comble.
- * Scanne tout le plateau a la recherche de cases vides qui completent un tel pattern.
- * 
- * Retourne l'index de la case critique, ou -1 si aucun gapped four detecte.
- */
-int find_gapped_four_hole(game *g, int player) {
-    int dx[] = {1, 0, 1, 1};
-    int dy[] = {0, 1, 1, -1};
-    
-    // Optimisation : On ne scanne que les cases vides.
-    // Si une case vide est entourée de 4 pierres alliées dans une direction, c'est une victoire.
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != EMPTY) continue;
-        
-        int x = GET_X(idx);
-        int y = GET_Y(idx);
-        
-        // Petit filtre rapide : si la case n'a aucun voisin immédiat, inutile de scanner les lignes
-        // (Optionnel, mais peut gagner du temps en début de partie)
-        /* bool has_neighbor = false;
-        for (int i = 0; i < 4; i++) {
-             // check rapide dx/dy...
-        }
-        if (!has_neighbor) continue; 
-        */
-
-        for (int d = 0; d < 4; d++) {
-            int stones = 0;
-            
-            // Scan dans les deux sens (Positif et Négatif)
-            // On utilise une boucle pour éviter la duplication de code
-            for (int dir = -1; dir <= 1; dir += 2) {
-                for (int k = 1; k <= 4; k++) {
-                    int nx = x + dx[d] * k * dir;
-                    int ny = y + dy[d] * k * dir;
-                    
-                    if (!IS_VALID(nx, ny)) break;
-                    
-                    if (g->board[GET_INDEX(nx, ny)] == player) {
-                        stones++;
-                    } else {
-                        break; // Pierre adverse ou vide : la ligne s'arrête
-                    }
-                }
-            }
-            
-            // Si le total des pierres connectées (plus celle qu'on poserait) ferait 5 ou plus
-            // Note : stones est la somme des voisins. Si stones >= 4, alors stones + 1 (le coup) == 5.
-            if (stones >= 4) {
-                return idx;
-            }
-        }
-    }
-    
-    return -1;
-}
-
-/*
- * NOUVELLE FONCTION : Détecte les Gapped THREE (3 pierres + 1 trou + espaces libres aux bords)
- * Patterns dangereux : .X_XX. ou .XX_X.
- * Retourne l'index du trou, ou -1 si pas trouvé
- */
-static int find_gapped_three_in_line(game *g, int x, int y, int dx, int dy, int player) {
-    int opponent = (player == P1) ? P2 : P1;
-    
-    // Construire un buffer de 7 cases centré sur (x,y)
-    int line[7];
-    int indices[7];
-    
-    for (int k = -3; k <= 3; k++) {
-        int nx = x + dx * k;
-        int ny = y + dy * k;
-        int buf_idx = k + 3;
-        
-        if (IS_VALID(nx, ny)) {
-            indices[buf_idx] = GET_INDEX(nx, ny);
-            line[buf_idx] = g->board[indices[buf_idx]];
-        } else {
-            indices[buf_idx] = -1;
-            line[buf_idx] = opponent; // Hors plateau = bloqué
-        }
-    }
-    
-    // Pattern: . X _ X X . (trou en position 2, fenêtre de 6)
-    // Positions: 0=empty, 1=player, 2=empty(hole), 3=player, 4=player, 5=empty
-    for (int start = 0; start <= 1; start++) {
-        if (start + 5 >= 7) continue;
-        if (line[start] == EMPTY &&
-            line[start + 1] == player &&
-            line[start + 2] == EMPTY &&
-            line[start + 3] == player &&
-            line[start + 4] == player &&
-            line[start + 5] == EMPTY) {
-            return indices[start + 2]; // Le trou !
-        }
-    }
-    
-    // Pattern: . X X _ X . (trou en position 3, fenêtre de 6)
-    for (int start = 0; start <= 1; start++) {
-        if (start + 5 >= 7) continue;
-        if (line[start] == EMPTY &&
-            line[start + 1] == player &&
-            line[start + 2] == player &&
-            line[start + 3] == EMPTY &&
-            line[start + 4] == player &&
-            line[start + 5] == EMPTY) {
-            return indices[start + 3]; // Le trou !
-        }
-    }
-    
-    return -1;
-}
-
-/*
- * Fonction exportée : Trouve la case critique d'un gapped THREE pour un joueur
- * C'est CRITIQUE car un gapped three non bloqué devient un gapped four !
- */
-/*
- * Fonction exportée : Trouve la case critique d'un gapped THREE pour un joueur
- * CORRIGÉ : Vérifie aussi depuis les cases vides
- */
-int find_gapped_three_hole(game *g, int player) {
-    int dx[] = {1, 0, 1, 1};
-    int dy[] = {0, 1, 1, -1};
-
-    // D5-FIX: Seule la Méthode 1 (scan depuis les pierres du joueur) est nécessaire.
-    // find_gapped_three_in_line construit un buffer centré sur (x,y) et cherche
-    // les patterns .X_XX. et .XX_X. dans toutes les fenêtres → couvre tous les cas.
-    // La Méthode 2 (scan depuis les cases vides) détectait les mêmes trous mais
-    // en arrivant du côté opposé → double comptage, O(2×MAX_BOARD×4) au lieu de O(MAX_BOARD×4).
-    for (int idx = 0; idx < MAX_BOARD; idx++) {
-        if (g->board[idx] != player) continue;
-
-        int x = GET_X(idx);
-        int y = GET_Y(idx);
-
-        for (int d = 0; d < 4; d++) {
-            int hole = find_gapped_three_in_line(g, x, y, dx[d], dy[d], player);
-            if (hole != -1) {
-                return hole;
-            }
-        }
-    }
-
-    return -1;
-}
-
-/*
- * Détecte si un coup crée une fourchette (plusieurs menaces simultanées)
- * Un bonus est accordé si le coup appartient à plusieurs lignes prometteuses.
+ * Detecte si un coup cree une fourchette (plusieurs menaces simultanees).
+ * Bonus accorde si le coup appartient a plusieurs lignes prometteuses.
  */
 int compute_fork_bonus(game *g, int x, int y, int player) {
     int dx[] = {1, 0, 1, 1};
@@ -913,28 +698,26 @@ bool is_double_three(game *g, int idx, int player) {
     return false;
 }
 
+/**
+ * Affiche le detail de l'analyse double-three pour un coup donne.
+ * Utilisee pour informer le joueur humain quand son coup est interdit.
+ */
 void explain_double_three(game *g, int idx, int player) {
     int x = GET_X(idx);
     int y = GET_Y(idx);
     
-    printf("--- ANALYSE DOUBLE-THREE (%d, %d) ---\n", x, y);
-    
     int free_threes = 0;
     int dx[] = {1, 0, 1, 1};
     int dy[] = {0, 1, 1, -1};
-    char *dir_names[] = {"Horizontal", "Vertical", "Diag Bas-Droite", "Diag Haut-Droite"};
+    char *dir_names[] = {"H", "V", "D\\", "D/"};
 
     for (int d = 0; d < 4; d++) {
         if (check_free_three_pattern(g, x, y, dx[d], dy[d], player)) {
-            printf("  > Free Three CRÉÉ par ce coup : %s\n", dir_names[d]);
+            printf("  Double-three: %s\n", dir_names[d]);
             free_threes++;
         }
     }
     
-    if (free_threes >= 2) {
-        printf("  => COUP INTERDIT (Crée %d Free Threes simultanés)\n", free_threes);
-    } else {
-        printf("  => Coup autorisé (Crée %d Free Three)\n", free_threes);
-    }
-    printf("---------------------------------------\n");
+    if (free_threes >= 2)
+        printf("  Interdit: %d free threes\n", free_threes);
 }

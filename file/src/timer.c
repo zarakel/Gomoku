@@ -10,18 +10,7 @@ void launchTimer(timer *t)
     }
 }
 
-void stopTimer(timer *t)
-{
-    if (!t) return;
-    if (t->running)
-    {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double diff = (now.tv_sec - t->start_ts.tv_sec) + (now.tv_nsec - t->start_ts.tv_nsec) / 1e9;
-        t->elapsed += diff;
-        t->running = false;
-    }
-}
+/* Dead code removed: stopTimer */
 
 void resetTimer(timer *t)
 {

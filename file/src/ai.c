@@ -14,19 +14,12 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
     double time_budget = (double)TIME_LIMIT_MS / 1000.0;
 
     if (depth > 2 && abs(prev_score) >= 5000 && abs(prev_score) < WIN_SCORE - 10000) {
-        // ZONE VOLATILE [OPEN_THREE, OPEN_FOUR) = [2M, 10M) : positions tactiques avec
-        // menaces non résolues. Le score peut changer de ±9M entre D(n) et D(n+2)
-        // (ex: D6=+8.9M → D8=-94K observé). L'aspiration centrée sur 8.9M force
-        // 2 retries coûteux (×4 window puis full) qui triplent le budget de D8.
-        // Solution : skip aspiration dans cette zone → 1 seule recherche full window.
-        // Les quasi-terminaux (≥OPEN_FOUR=10M) bénéficient toujours de l'aspiration
-        // car ils sont stables (quasi-terminaux = peu de variation entre profondeurs).
+        // Zone volatile [OPEN_THREE, OPEN_FOUR) : skip aspiration (scores instables entre depths)
         if (abs(prev_score) >= OPEN_THREE && abs(prev_score) < OPEN_FOUR) {
-            // Full window : pas de restriction, pas de retry
-            // alpha/beta restent à leurs valeurs larges par défaut
+            // Full window directement
         } else {
             window = 5000 + (abs(prev_score) / 100);
-            // Plancher : OPEN_THREE/4 = 500k pour les scores forts (≥OPEN_FOUR).
+            // Plancher pour scores forts
             if (abs(prev_score) >= OPEN_FOUR && window < OPEN_THREE / 4)
                 window = OPEN_THREE / 4;
             alpha = prev_score - window;
@@ -42,13 +35,7 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
     if (*best_move_out == -1) *best_move_out = moves[0].index;
     int opponent_asp = (ia_player == P1) ? P2 : P1;
 
-    // Fenêtre progressive : window ×1, ×4, pleine.
-    // Objectif : éviter le re-run à fenêtre pleine (2× coût) quand la fenêtre élargie
-    // suffit pour confirmer le score. Sur les positions stables (mid-game), la
-    // fenêtre ×4 réussit dans >90% des cas → économise 100-150ms sur D10.
-    // GARDE-TEMPS : avant tout retry, s'assurer qu'il reste au moins 55% du budget.
-    // Sur fail à D10 (run 1 ≈60% budget), on accepte le résultat partiel : le coup
-    // TT de D8 est en tête du tri → current_best_idx est presque toujours correct.
+    // Fenetre progressive : ×1, ×4, pleine. Retry si score hors fenetre.
     int window_mult = 1;
     int loop_guard = 0;
     while (loop_guard++ < 3) {
@@ -68,10 +55,7 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
                 // Premier coup : fenêtre pleine (candidat PV)
                 val = -negamax(g, depth - 1, -beta, -alpha, opponent_asp, start, true);
             } else {
-                // PVS : null-window d'abord (beaucoup moins coûteuse)
-                // Si le score dépasse alpha sans atteindre beta → on re-cherche en plein
-                // Gain : moves qui échouent alpha (cas fréquent avec bon ordering) coûtent
-                // ~2-3× moins cher qu'une recherche pleine.
+                // PVS : null-window d'abord, re-search si score entre alpha et beta
                 val = -negamax(g, depth - 1, -alpha - 1, -alpha, opponent_asp, start, true);
                 if (val != TIMEOUT_CODE && val != -TIMEOUT_CODE
                     && val > alpha && val < beta) {
@@ -92,23 +76,18 @@ static int run_aspiration_search(game *g, int depth, int prev_score, int *best_m
 
         if (time_out) return TIMEOUT_CODE;
         if (depth > 2 && (current_best_score <= alpha_origin || current_best_score >= beta_origin)) {
-            // Pas de retry si la position est plate (score < CLOSED_THREE) :
-            // une fenêtre plus large ne changera pas l'évaluation d'une position
-            // sans menace réelle. Économise ~200ms sur T3 où score ≈ ±4000.
+            // Positions plates : fenetre plus large inutile
             if (abs(current_best_score) < CLOSED_THREE) {
                 if (current_best_idx != -1) *best_move_out = current_best_idx;
                 return current_best_score;
             }
-            // Vérification du budget avant retry.
-            // Si >55% du budget écoulé au moment du fail, le retry coûterait plus
-            // que le budget restant. On accepte le meilleur coup trouvé (TT move
-            // de D-2 en tête = bonne qualité même avec fenêtre étroite).
+            // Budget check : >60% consomme -> accepter le resultat partiel
             double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
             if (elapsed > time_budget * 0.60) {
                 if (current_best_idx != -1) *best_move_out = current_best_idx;
                 return current_best_score;
             }
-            // Fenêtre progressive : ×4 d'abord, puis pleine.
+            // Elargir la fenetre : x4 puis pleine
             window_mult = (window_mult == 1) ? 4 : 100;
             int new_window = window * window_mult;
             if (new_window > WIN_SCORE || window_mult >= 100) {
@@ -184,31 +163,19 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
     int prev_score = 0;
     double allocated_time = (double)TIME_LIMIT_MS / 1000.0;
 
-    // Step=2 sur depths pairs : évite l'oscillation de parité (odd/even parity effect).
-    // À depth impair, P2 joue en dernier → scores artificiellement gonflés → faux WIN_SCORE.
-    // Même parité garantit que le fallback est toujours comparable au depth précédent.
+    // Step=2 sur depths paires pour eviter l'oscillation de parite
     long long prev_nodes = 0;
-    // OUVERTURE : quand le plateau est quasi-vide (< 2 pierres = seulement le 1er coup IA),
-    // l'arbre est trop homogène pour que l'alpha-beta coupe. On plafonne à D4 uniquement
-    // pour le tout premier coup joué (stone_count==0 ou 1 : pas de contexte tactique).
-    // Dès la 2e pierre, la TT est warm et le pruning reprend, D10+ est accessible.
+    // Ouverture : plateau quasi-vide -> max D4 (arbre trop homogene)
     int max_iter_depth = (g->stone_count < 2) ? 4 : MAX_DEPTH;
     double last_depth_duration = 0.0;  // durée du dernier depth complété
     double depth_start = 0.0;         // timestamp du début du depth courant
     for (int depth = 2; depth <= max_iter_depth; depth += 2) {
-        // Pré-check 1 — garde absolue : >55% du budget consommé → stop.
-        // Couvre le cas D(n) terminé à ~61% du budget.
+        // Garde-temps : >55% budget consomme -> stop
         if (depth > 2) {
             double pre_elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
             if (pre_elapsed > allocated_time * 0.55) break;
 
-            // Pré-check 2 — projection D(n+2) ≈ 2.5× D(n).
-            // Si D(n) a pris `last_depth_duration` secondes et qu'on estime que
-            // D(n+2) en prendra ~2.5× autant, on vérifie que le total projeté
-            // resterait dans le budget avant de lancer.
-            // Exemple : D8 à 131ms (33%), last_depth_duration=131ms.
-            // Projection D10 ≈ 328ms. Total projeté : 131 + 328 = 459ms > 360ms → stop.
-            // Facteur 2.5 empirique (branching factor typique mid-game avec pruning).
+            // Projection D(n+2) ~ 2.5x D(n) : skip si deborderait le budget
             if (last_depth_duration > 0.0) {
                 double projected_end = pre_elapsed + last_depth_duration * 2.5;
                 if (projected_end > allocated_time * 0.90) break;
@@ -228,34 +195,17 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         printf("Depth %d complete. Score: %d | nodes: %lld (+%lld) | t: %.3fs\n",
                depth, score, debug_node_count, nodes_this_depth, elapsed);
 
-        // ASPIRATION GUARD : si le score est quasi-terminal (±WIN_SCORE ± 50000),
-        // ne pas l'utiliser comme centre de fenêtre pour la prochaine depth.
-        // Un score quasi-terminal biaise la fenêtre aspiration → tous les coups
-        // sont clampés au bord → depth suivante retourne le même biais en cascade.
-        // Seuil WIN_SCORE-50000 couvre WIN_SCORE±depth ET les quasi-terminaux
-        // d'evaluate_board (WIN_SCORE-1001 à WIN_SCORE-3501).
-        // On force prev_score=0 pour garantir une fenêtre ouverte.
+        // Score quasi-terminal : reset fenetre aspiration pour eviter le biais
         if (abs(score) >= WIN_SCORE - 50000) {
             prev_score = 0;
         }
 
-        // Arret anticipe sur victoire/defaite reelle ou position quasi-déterminée.
-        // Deux cas distincts :
-        // 1) score >= WIN_SCORE (vrai terminal : alignement ou 5 captures) → break
-        //    immédiat, le coup best_move est celui qui ferme la ligne / capte.
-        // 2) score >= WIN_SCORE-1500 mais < WIN_SCORE (= WIN_SCORE-1001,
-        //    ≥2 open fours) → on cherche un coup de clôture 1-ply.
-        //    - Si trouvé : WIN-OVERRIDE + break (la victoire est à 1 ply).
-        //    - Si NON trouvé : on NE break PAS. La victoire est en 2+ plies
-        //      (jouer un open four, bloquer, puis l'autre). Il faut continuer
-        //      D6/D8 pour que le PV identifie le BON premier coup de la séquence.
-        //      Briser ici avec le coup D4 causait la répétition "19998999 × N
-        //      sans conversion" vue en G4.
+        // Arret anticipe sur victoire/defaite detectee
         if (depth >= 4 && score >= WIN_SCORE) {
             int imm = find_immediate_win(g, ia_player);
             if (imm != -1) {
                 #ifdef DEBUG
-                printf(">>> WIN-OVERRIDE : (%d,%d) → (%d,%d) [1-ply scan]\n",
+                printf("[ID] win-override: (%d,%d)->(%d,%d) [1-ply]\n",
                        GET_X(best_move), GET_Y(best_move), GET_X(imm), GET_Y(imm));
                 #endif
                 best_move = imm;
@@ -266,7 +216,7 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
             int imm = find_immediate_win(g, ia_player);
             if (imm != -1) {
                 #ifdef DEBUG
-                printf(">>> WIN-OVERRIDE (dual) : (%d,%d) → (%d,%d) [1-ply scan]\n",
+                printf("[ID] win-override dual: (%d,%d)->(%d,%d) [1-ply]\n",
                        GET_X(best_move), GET_Y(best_move), GET_X(imm), GET_Y(imm));
                 #endif
                 best_move = imm;
@@ -275,19 +225,7 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
             // Pas de coup 1-ply gagnant : continuer la recherche pour trouver
             // le meilleur premier coup de la séquence duale (D6/D8/...).
         }
-        // QUASI-WIN 2-PLY : score ∈ [WIN_SCORE-3000, WIN_SCORE-1501]
-        // = double closed_four (WIN_SCORE-2001) ou closed_four+open_three (WIN_SCORE-2500)
-        // Ces quasi-terminaux = victoire en 2 plies : AI joue pour promouvoir
-        // un closed_four en open_four, puis gagne. find_immediate_win (1-ply) échoue.
-        // Sans break, on continue à D(n+2) — mais si l'adversaire a du temps de
-        // réponse entre les profondeurs, il peut construire sa propre menace et faire
-        // osciller de +WIN_SCORE à -WIN_SCORE observé dans les logs.
-        // Solution : si on a ≥1 closed_four et score quasi-win, garder best_move
-        // et breaker immédiatement — SAUF si l'adversaire construit un réseau de
-        // forks dangereux simultanément (opp_open_fours >= 1, ou
-        // opp_open_threes >= 1 + opp_closed_threes >= 2 = conversion imminente).
-        // Dans ce cas, continuer la recherche pour que negamax voie la menace adverse
-        // et choisisse entre promouvoir offensivement ou bloquer d'abord.
+        // Quasi-win 2-ply : closed_four promotable, break sauf si adversaire a un reseau menacant
         if (depth >= 6 && score >= WIN_SCORE - 3000 && score < WIN_SCORE - 1001) {
             int my_cf = g->threat_counts[ia_player][IDX_CLOSED_FOUR];
             if (my_cf >= 1) {
@@ -301,15 +239,14 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
                                    || (opp_ot >= 2);
                 if (!opp_network) {
                     #ifdef DEBUG
-                    printf(">>> WIN-OVERRIDE (quasi-2ply) : (%d,%d) [closed_four promote]\n",
+                    printf("[ID] win-override quasi-2ply: (%d,%d) [cf promote]\n",
                            GET_X(best_move), GET_Y(best_move));
                     #endif
                     break;  // best_move = premier coup de la promotion
                 }
-                // opp_network=true : ne pas breaker, laisser negamax peser
-                // l'offensive vs la défense aux profondeurs suivantes.
+                // Adversaire a un reseau menacant : continuer la recherche
                 #ifdef DEBUG
-                printf(">>> WIN-OVERRIDE SUPPRESSED (opp_network : of=%d ot=%d ct=%d) : continuer recherche\n",
+                printf("[ID] win-override suppressed (opp: of=%d ot=%d ct=%d)\n",
                        opp_of, opp_ot, opp_ct);
                 #endif
             }
@@ -319,23 +256,16 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
         if ((double)(clock() - start) / CLOCKS_PER_SEC > allocated_time * 0.90) break;
     }
 
-    // GARDE DE SÉCURITÉ FINALE : si l'adversaire peut gagner en 1 coup, on doit
-    // le bloquer — sauf si on a soi-même une victoire immédiate 1-ply.
-    // On utilise find_immediate_win(opponent) plutôt que threat_counts[IDX_OPEN_FOUR]
-    // car threat_counts peut être désynchronisé de la détection CRISE NIVEAU 2.
+    // Garde de securite : bloquer si adversaire gagne en 1 coup
     int opponent = (ia_player == 1) ? 2 : 1;
     int imm_opp = find_immediate_win(g, opponent);
     if (imm_opp != -1) {
         int imm_self = find_immediate_win(g, ia_player);
         if (imm_self == -1) {
-            // L'adversaire gagne en 1 coup et on ne gagne pas en 1 coup.
-            // Bloquer le premier coup gagnant détecté.
-            // MAIS : si l'adversaire a un OPEN FOUR (2 bouts ouverts), bloquer un seul
-            // bout est insuffisant. Dans ce cas, chercher si une CAPTURE peut neutraliser
-            // l'alignement en retirant une pierre.
+            // Adversaire gagne en 1 coup : bloquer ou capturer
             if (!is_double_three(g, imm_opp, ia_player)) {
                 #ifdef DEBUG
-                printf(">>> OPP-WIN-GUARD : (%d,%d) → (%d,%d) [block opp immediate win]\n",
+                printf("[AI] opp-win-guard: (%d,%d)->(%d,%d)\n",
                        GET_X(best_move), GET_Y(best_move), GET_X(imm_opp), GET_Y(imm_opp));
                 #endif
                 // Vérifier si bloquer résout vraiment (l'adversaire n'a pas un 2e coup gagnant)
@@ -354,7 +284,7 @@ static int run_iterative_deepening(game *g, int ia_player, clock_t start) {
                         undo_move(g, ia_player, &test_undo);
                         if (imm_after_cap == -1) {
                             #ifdef DEBUG
-                            printf(">>> OPP-WIN-GUARD : capture (%d,%d) neutralise open four\n",
+                            printf("[AI] capture (%d,%d) neutralizes open four\n",
                                    GET_X(cap_move), GET_Y(cap_move));
                             #endif
                             best_move = cap_move;
@@ -391,7 +321,6 @@ static void finalize_move(game *g, screen *win, int move_idx, int player, clock_
             }
         }
         win->changed = true; 
-        printf("IA plays at (%d, %d) [%.3fs]\n", x, y, (double)(clock() - start) / CLOCKS_PER_SEC);
         g->ia_timer.elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
     }
 }
@@ -414,15 +343,10 @@ void makeIaMove(game *gameData, screen *windows) {
     bool forcing_found = false;
     char *reason = "Minimax";
 
-    // Les statistiques du plateau (pos_score, threat_counts) sont maintenues
-    // incrémentalement par apply_move/undo_move — pas besoin de refresh_board_stats ici.
-    // Calcul du niveau de crise (informatif uniquement, ne force plus les coups)
+    // Mise a jour du niveau de crise (informatif, ne force pas de coup)
     update_crisis_state(gameData, ia_player);
 
-    // OPENING BOOK : évite le calcul inutile sur un plateau quasi-vide.
-    // stone_count == 0 : IA P1, joue au centre.
-    // stone_count == 1 : IA P2, répond au premier coup humain.
-    // Économie : ~5ms × 2 coups = budget redistribuable sur les plies critiques.
+    // Opening book : coups predefinis quand le plateau est quasi-vide
     if (gameData->stone_count <= 1) {
         int book_idx = -1;
         int center = GET_INDEX(9, 9);
@@ -451,9 +375,7 @@ void makeIaMove(game *gameData, screen *windows) {
         }
     }
 
-    // PHASE 1 : GENERATION ET TRI DES COUPS CANDIDATS
-    // generate_moves explore le plateau et trie les coups par pertinence
-    // (victoires immediates, menaces, captures, centralite)
+    // Phase 1 : generation et tri des coups candidats
     MoveCandidate moves[MAX_BOARD];
     int count = generate_moves(gameData, moves, ia_player, 0, -1);
     
@@ -463,14 +385,12 @@ void makeIaMove(game *gameData, screen *windows) {
         forcing_found = true;
         reason = "Centre (plateau vide)";
     } else {
-        // Analyse du meilleur coup genere (deja trie par score)
-        // On ne force que les situations de victoire/mort immediate
-        // Tout le reste (attaques, defenses) est evalue par minimax
+        // Forcer uniquement victoire/mort immediate
         if (moves[0].score_estim >= SORT_WIN_IMMEDIATE) {
             best_move = moves[0].index;
             forcing_found = true;
             
-            // Déterminer si c'est une victoire ou un blocage
+            // Determiner si victoire ou blocage
             gameData->board[best_move] = ia_player;
             int my_score = get_point_score(gameData, GET_X(best_move), GET_Y(best_move), ia_player);
             gameData->board[best_move] = EMPTY;
@@ -484,46 +404,19 @@ void makeIaMove(game *gameData, screen *windows) {
         // Aucun coup force detecte : minimax decidera
     }
 
-    // PHASE 2 : RECHERCHE TACTIQUE ET STRATEGIQUE
-    // Politique révisée — minimax n'est PLUS court-circuité pendant les crises.
-    //
-    // Ancien problème : defense_needed → forcing_found=true → minimax jamais exécuté
-    // → l'IA jouait en pure défense répétitive → perdait contre un joueur agressif
-    // qui créait une menace Open Four à chaque tour.
-    //
-    // Nouvelle politique :
-    //   1. Pré-calculer le coup défensif (fallback) via find_best_defense
-    //   2. Laisser minimax chercher le meilleur coup (attaque + défense intégrées)
-    //   3. Après minimax, valider que le coup choisi résout la crise
-    //   4. Si minimax échoue, substituer par le coup défensif pré-calculé
-    //
-    // Minimax bloque naturellement les Open Fours : ne pas bloquer = -WIN_SCORE
-    // à depth 1 (l'adversaire joue Five). C'est corrigé automatiquement par la
-    // recherche, sans besoin de forçage explicite.
+    // Phase 2 : recherche strategique
+    // Defense precomputee comme filet de securite, minimax decide du meilleur coup
     bool defense_needed = gameData->in_crisis &&
         (gameData->crisis_level >= 2 ||
          (gameData->crisis_level >= 1 && gameData->crisis_immediate_win));
     int precomputed_defense = -1;
     if (!forcing_found && defense_needed) {
         precomputed_defense = find_best_defense_with_threat_space(gameData, ia_player);
-        // NOTE: Ne PAS setter forcing_found — minimax doit chercher des contre-attaques.
-        // precomputed_defense sert de filet de sécurité post-minimax.
     }
 
-    // Priorite 1 : VCF (sequences de menaces forcees menant a la victoire)
-    // Priorite 2 : Minimax avec approfondissement iteratif (evaluation complete)
+    // VCF puis minimax
     if (!forcing_found) {
-        // VCF est purement offensif : il ne voit pas les victoires adverses.
-        // Bloqué dans 3 cas :
-        // 1. crisis_immediate_win : adversaire gagne en 1 coup (alignement ou 5e capture)
-        // 2. captures[opponent] >= 3 : 2 paires de plus = victoire par capture. VCF
-        //    expose souvent des paires → suicidaire. Minimax gèrera défense + attaque.
-        // 3. opponent a ≥1 closed four : à 1 coup de créer un open four. VCF ignore
-        //    ce danger et pourrait jouer offensif pendant que l'adversaire promeut.
-        // Note : crisis_level >= 2 ne bloque PLUS VCF. VCF gère les positions où
-        // l'adversaire a un Open Four via son soundness check (defender_survives).
-        // Si VCF trouve un gain forcé, l'adversaire ne peut pas le stopper (même
-        // avec son Open Four, car VCF simule toutes les réponses défensives).
+        // VCF bloque si adversaire gagne en 1, captures >= 3, ou closed_four adverse
         bool vcf_blocked = gameData->crisis_immediate_win
                         || (gameData->captures[opponent] >= 3)
                         || (gameData->threat_counts[opponent][IDX_CLOSED_FOUR] >= 1);
@@ -533,23 +426,19 @@ void makeIaMove(game *gameData, screen *windows) {
         } else {
             best_move = run_iterative_deepening(gameData, ia_player, start);
 
-            // RECOURS DÉFENSIF post-minimax : valider que minimax résout la crise.
-            // Si minimax choisit un coup qui laisse l'adversaire en position gagnante,
-            // substituer par le coup défensif pré-calculé.
+            // Recours defensif : substituer si minimax laisse une position perdante
             if (best_move != -1 && defense_needed) {
                 MoveUndo rescue_undo;
                 apply_move(gameData, best_move, ia_player, &rescue_undo);
                 int mm_score = evaluate_board(gameData, ia_player);
                 undo_move(gameData, ia_player, &rescue_undo);
-                // Déclencher sur :
-                //   a) Score très négatif (quasi-terminal perdant)
-                //   b) crisis_level >= 2 ET score négatif significatif
+            // Déclencher le recours si score quasi-terminal perdant
                 bool rescue_needed = (mm_score <= -(WIN_SCORE - 3000))
                                   || (gameData->crisis_level >= 2 && mm_score <= -(WIN_SCORE - 50000));
                 if (rescue_needed && precomputed_defense != -1
                     && !is_double_three(gameData, precomputed_defense, ia_player)) {
                     #ifdef DEBUG
-                    printf(">>> DEFENSE-RESCUE : minimax (%d,%d) score=%d → defense (%d,%d)\n",
+                    printf("[AI] defense-rescue: mm(%d,%d) s=%d -> def(%d,%d)\n",
                            GET_X(best_move), GET_Y(best_move), mm_score,
                            GET_X(precomputed_defense), GET_Y(precomputed_defense));
                     #endif
@@ -587,6 +476,6 @@ void makeIaMove(game *gameData, screen *windows) {
         }
     }
 
-    printf("✅ [%s] (%d, %d). Raison: %s [Temps: %.3fs]\n", forcing_found ? "FORCED" : "AI", GET_X(best_move), GET_Y(best_move), reason, time_spent);
+    printf("[AI] (%d,%d) %s | D%d | %.3fs\n", GET_X(best_move), GET_Y(best_move), reason, ia_last_depth, time_spent);
     finalize_move(gameData, windows, best_move, ia_player, start, false);
 }

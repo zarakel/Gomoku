@@ -394,7 +394,7 @@ int find_winning_vcf(game *g, int attacker) {
         memset(vcf_cache, -1, sizeof(vcf_cache));
         vcf_cache_hash = g->current_hash;
         #ifdef DEBUG
-        printf(">>> VCF Cache : Reset\n");
+        printf("[VCF] cache reset\n");
         #endif
     }
     
@@ -406,7 +406,7 @@ int find_winning_vcf(game *g, int attacker) {
     // (Il va gagner avant nous)
     if (g->max_threat_level[defender] >= IDX_OPEN_FOUR) {
         #ifdef DEBUG
-        printf(">>> VCF abandonné : adversaire a déjà un Open Four\n");
+        printf("[VCF] abort: opp has open four\n");
         #endif
         return -1;
     }
@@ -418,7 +418,7 @@ int find_winning_vcf(game *g, int attacker) {
     if (g->threat_counts[defender][IDX_OPEN_THREE] >= 1 &&
         g->threat_counts[defender][IDX_CLOSED_FOUR] >= 1) {
         #ifdef DEBUG
-        printf(">>> VCF abandonné : adversaire en pré-fourchette (open3+closed4)\n");
+        printf("[VCF] abort: opp pre-fork (ot+cf)\n");
         #endif
         return -1;
     }
@@ -429,7 +429,7 @@ int find_winning_vcf(game *g, int attacker) {
     // aucune chance d'être valide dans ce contexte (l'adversaire a toujours l'option capture).
     if (g->captures[defender] >= 4) {
         #ifdef DEBUG
-        printf(">>> VCF abandonné : adversaire à 4 captures (quasi-victoire)\n");
+        printf("[VCF] abort: opp at 4 captures\n");
         #endif
         return -1;
     }
@@ -457,7 +457,7 @@ int find_winning_vcf(game *g, int attacker) {
         // test consommait 70ms indépendamment → 3 tests = 210ms+ rien que pour VCF.
         if ((double)(clock() - start) / CLOCKS_PER_SEC > VCF_TIME_LIMIT) {
             #ifdef DEBUG
-            printf(">>> VCF timeout après %d tests (%.3fs)\n", 
+            printf("[VCF] timeout after %d tests (%.3fs)\n", 
                    tests_performed, (double)(clock() - start) / CLOCKS_PER_SEC);
             #endif
             break;
@@ -468,7 +468,7 @@ int find_winning_vcf(game *g, int attacker) {
         if (moves[i].score_estim < OPEN_THREE) {
             #ifdef DEBUG
             // On arrête dès qu'on tombe sous le seuil (la liste est triée)
-            printf(">>> VCF : Arrêt du scan à l'index %d (score trop faible)\n", i);
+            printf("[VCF] cutoff at idx=%d (score too low)\n", i);
             #endif
             break; // Plus besoin de continuer, la liste est triée
         }
@@ -535,7 +535,7 @@ int find_winning_vcf(game *g, int attacker) {
             // ======================================
             
             #ifdef DEBUG
-            printf(">>> VCF : Victoire immédiate en (%d,%d)\n", 
+            printf("[VCF] immediate win at (%d,%d)\n", 
                    GET_X(idx), GET_Y(idx));
             #endif
             return idx;
@@ -554,7 +554,7 @@ int find_winning_vcf(game *g, int attacker) {
         
         if (vcf_found) {
             #ifdef DEBUG
-            printf(">>> VCF trouvé en (%d,%d) après %d tests\n", 
+            printf("[VCF] found at (%d,%d) after %d tests\n", 
                    GET_X(idx), GET_Y(idx), tests_performed);
             printf("    Cache : %d hits, %d misses\n", cache_hits, cache_misses);
             #endif
@@ -564,7 +564,7 @@ int find_winning_vcf(game *g, int attacker) {
         // Check timeout global de la fonction
         if ((double)(clock() - start) / CLOCKS_PER_SEC > time_limit) {
             #ifdef DEBUG
-            printf(">>> VCF timeout après %d tests (%.3fs)\n", 
+            printf("[VCF] global timeout after %d tests (%.3fs)\n", 
                    tests_performed, (double)(clock() - start) / CLOCKS_PER_SEC);
             #endif
             break;
@@ -573,7 +573,7 @@ int find_winning_vcf(game *g, int attacker) {
     
     // ===== ÉTAPE 5 : AUCUN VCF TROUVÉ =====
     #ifdef DEBUG
-    printf(">>> VCF : Aucune victoire forcée trouvée\n");
+    printf("[VCF] no forced win found\n");
     printf("    Cache : %d hits, %d misses, %d tests effectués\n", 
            cache_hits, cache_misses, tests_performed);
     #endif

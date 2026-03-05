@@ -60,50 +60,7 @@ int get_captures_indices(game *gameData, int lx, int ly, int removed_indices[10]
     return count;
 }
 
-/**
- * Fonction principale de gestion des captures.
- * 
- * Valide le coup, detecte les captures, met a jour le plateau et l'affichage.
- * Incremente le compteur de paires capturees du joueur.
- */
-void checkPieceCapture(game *gameData, screen *windows, int lx, int ly)
-{
-    // 1. Validation basique
-    if (!gameData || !in_bounds(lx, ly)) return;
-    
-    // Vérifier que la case n'est pas vide (le coup vient d'être joué)
-    int current_idx = GET_INDEX(lx, ly);
-    int owner = gameData->board[current_idx];
-    if (owner != P1 && owner != P2) return;
-
-    // 2. Calcul des captures (Logique pure, très rapide)
-    int removed_indices[10]; // Max 8 pierres capturables théoriquement
-    int count = get_captures_indices(gameData, lx, ly, removed_indices);
-
-    // 3. Application des changements (Si captures il y a)
-    if (count > 0)
-    {
-        for (int i = 0; i < count; i++)
-        {
-            int idx = removed_indices[i];
-            
-            // Mise à jour Mémoire
-            gameData->board[idx] = EMPTY;
-            
-            // Mise à jour Graphique (Seulement si windows existe, pour compatibilité IA future)
-            if (windows) {
-                drawSquare(windows, GET_X(idx), GET_Y(idx), EMPTY);
-            }
-        }
-
-        // Mise à jour Scores (Chaque paire vaut 1 point de capture)
-        // count est le nombre de pierres, donc count / 2 est le nombre de paires
-        gameData->captures[owner] += (count / 2);
-        
-        // On notifie que l'écran a changé
-        windows->changed = true;
-    }
-}
+/* Dead code removed: checkPieceCapture (replaced by apply_captures_for_ai) */
 
 /**
  * Compte les paires vulnerables apres avoir simule un coup.

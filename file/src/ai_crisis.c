@@ -174,9 +174,9 @@ void update_crisis_state(game *g, int ia_player) {
 
         #ifdef DEBUG
         bool by_capture = (g->captures[opponent] >= 4);
-        printf(">>> CRISE NIVEAU %d : %d coup(s) gagnant(s) détecté(s) ! [%s]\n",
+        printf("[CRISIS] lvl=%d wins=%d [%s]\n",
                g->crisis_level, g->crisis_move_count,
-               by_capture ? "par CAPTURE" : "par ALIGNEMENT");
+               by_capture ? "CAPTURE" : "ALIGN");
         #endif
         return;
     }
@@ -229,13 +229,13 @@ void update_crisis_state(game *g, int ia_player) {
                 g->crisis_move_count = wm;
                 g->crisis_level = 3;  // force find_best_defense_with_threat_space
                 #ifdef DEBUG
-                printf(">>> CRISE P1-FIX : %d contre-captures fusionnées (Open4 + cap>=4)\n", wm - open_four_count);
+                printf("[CRISIS] P1-FIX: %d counter-captures merged\n", wm - open_four_count);
                 #endif
             }
         }
 
         #ifdef DEBUG
-        printf(">>> CRISE NIVEAU %d : %d Open Four adverses détectés\n", g->crisis_level, open_four_count);
+        printf("[CRISIS] lvl=%d of=%d\n", g->crisis_level, open_four_count);
         #endif
         return;
     }
@@ -250,7 +250,7 @@ void update_crisis_state(game *g, int ia_player) {
         // (les open_four étaient à zéro ici, donc les closed_four sont en tête)
         g->crisis_level = 1;
         #ifdef DEBUG
-        printf(">>> CRISE NIVEAU 1 : %d Closed Four adverses détectés (précurseur)\n", closed_four_count);
+        printf("[CRISIS] lvl=1 cf=%d\n", closed_four_count);
         #endif
         return;
     }
@@ -285,7 +285,7 @@ void update_crisis_state(game *g, int ia_player) {
             if (count_found >= 2) g->crisis_level = 2; // Double menace = Danger
             
             #ifdef DEBUG
-            printf(">>> CRISE NIVEAU %d : %d Open Three adverses localisés\n", g->crisis_level, count_found);
+            printf("[CRISIS] lvl=%d ot=%d\n", g->crisis_level, count_found);
             #endif
             return;
         }
@@ -301,7 +301,7 @@ void update_crisis_state(game *g, int ia_player) {
             g->in_crisis = true;
             g->crisis_level = (g->captures[opponent] >= 4) ? 3 : 2;
             #ifdef DEBUG
-            printf(">>> CRISE NIVEAU %d : Adversaire à %d captures, %d paires vulnérables\n",
+            printf("[CRISIS] lvl=%d opp_cap=%d vuln=%d\n",
                    g->crisis_level, g->captures[opponent], vulnerable);
             #endif
             return;
@@ -442,7 +442,7 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
     qsort(candidates, cand_count, sizeof(DefenseCandidate), compare_defense);
     
     #ifdef DEBUG
-    printf(">>> THREAT SPACE : %d candidats. Top: (%d,%d)\n", cand_count, 
+    printf("[CRISIS] threat_space: %d cands, top=(%d,%d)\n", cand_count, 
            GET_X(candidates[0].idx), GET_Y(candidates[0].idx));
     #endif
 
@@ -471,7 +471,7 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
                         if (is_winning_threat(g, k, opponent)) {
                             still_wins = true;
                             #ifdef DEBUG
-                            if (i==0) printf("    \u274c Refus (%d,%d) : L'adversaire gagne encore en (%d,%d)\n",
+                            if (i==0) printf("  reject (%d,%d): opp wins at (%d,%d)\n",
                                              GET_X(idx), GET_Y(idx), GET_X(k), GET_Y(k));
                             #endif
                             break;
@@ -484,7 +484,7 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
         
         if (is_safe) {
             #ifdef DEBUG
-            printf("    ✅ DÉFENSE VALIDÉE : (%d,%d)\n", GET_X(idx), GET_Y(idx));
+            printf("  defense ok: (%d,%d)\n", GET_X(idx), GET_Y(idx));
             #endif
             return idx;
         }
@@ -504,7 +504,7 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
         undo_move(g, ia_player, &undo_cw);
         if (wins) {
             #ifdef DEBUG
-            printf("    \U0001f3c6 CONTRE-VICTOIRE DÉSESPÉRÉE : (%d,%d)\n", GET_X(k), GET_Y(k));
+            printf("  counter-win: (%d,%d)\n", GET_X(k), GET_Y(k));
             #endif
             return k;
         }
@@ -543,7 +543,7 @@ int find_best_defense_with_threat_space(game *g, int ia_player) {
     }
 
     #ifdef DEBUG
-    printf("    ⚠️ ECHEC DÉFENSE PARFAITE. Desperate→(%d,%d) (opp_wins_restants=%d)\n",
+    printf("  no perfect defense, desperate=(%d,%d) opp_wins=%d\n",
            GET_X(best_desperate), GET_Y(best_desperate), min_opp_wins);
     #endif
 
