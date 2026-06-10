@@ -112,13 +112,13 @@ int teamColor(unsigned short int team)
     switch (team)
     {
     case EMPTY: // 0
-        return get_rgba(0, 0, 0, 255);
+        return get_rgba(0, 0, 0, 0); // Transparent pour EMPTY
     case P1:    // 1
-        return get_rgba(0, 255, 0, 255); // Vert pour P1
+        return get_rgba(30, 30, 30, 255); // Noir gomoku
     case P2:    // 2
-        return get_rgba(255, 0, 0, 255); // Rouge pour P2
-    case 3:     // HINT (Coup suggéré)
-        return get_rgba(255, 255, 255, 255); // Blanc
+        return get_rgba(230, 230, 230, 255); // Blanc gomoku
+    case 3:     // HINT
+        return get_rgba(255, 255, 255, 128); // Semi-transparent
     default:
         return get_rgba(255, 255, 255, 255);
     }
@@ -139,39 +139,46 @@ void drawSquare(screen *windows, int x0, int y0, unsigned short int team)
     if (drawable_w <= 0 || drawable_h <= 0)
         return;
 
-    // Calcul basé sur l'espacement entre lignes
     double cell_w_f = (double)drawable_w / (double)(windows->board_size - 1);
     double cell_h_f = (double)drawable_h / (double)(windows->board_size - 1);
 
     int cx = ml + (int)round(x0 * cell_w_f);
     int cy = mt + (int)round(y0 * cell_h_f);
 
-    // Taille du pion
-    int radius_x = (int)round(cell_w_f * 0.4); // 0.4 pour être un peu plus petit que la case
-    int radius_y = (int)round(cell_h_f * 0.4);
-    
-    if (radius_x < 1) radius_x = 1;
-    if (radius_y < 1) radius_y = 1;
+    int radius = (int)round(fmin(cell_w_f, cell_h_f) * 0.4);
+    if (radius < 1) radius = 1;
 
-    int x_start = cx - radius_x;
-    int x_end   = cx + radius_x;
-    int y_start = cy - radius_y;
-    int y_end   = cy + radius_y;
-
-    /* clamp */
-    if (x_start < 0) x_start = 0;
-    if (y_start < 0) y_start = 0;
-    if (x_end >= (int)windows->width) x_end = windows->width - 1;
-    if (y_end >= (int)windows->height) y_end = windows->height - 1;
+    if (team == EMPTY)
+    {
+        // Effacer la zone (un peu plus large que le pion)
+        int clear_r = radius + 1;
+        for (int i = -clear_r; i <= clear_r; i++)
+        {
+            for (int j = -clear_r; j <= clear_r; j++)
+            {
+                safe_put_pixel(windows, cx + i, cy + j, get_rgba(0, 0, 0, 255));
+            }
+        }
+        // Redessiner l'intersection du cadrillage
+        int grid_color = get_rgba(255, 0, 0, 255);
+        for (int i = -clear_r; i <= clear_r; i++)
+            safe_put_pixel(windows, cx + i, cy, grid_color);
+        for (int j = -clear_r; j <= clear_r; j++)
+            safe_put_pixel(windows, cx, cy + j, grid_color);
+        return;
+    }
 
     int color = teamColor(team);
     
-    // Dessin carré simple (pour l'instant)
-    for (int i = x_start; i <= x_end; i++)
+    // Dessin d'un cercle (pion)
+    for (int i = -radius; i <= radius; i++)
     {
-        for (int j = y_start; j <= y_end; j++)
+        for (int j = -radius; j <= radius; j++)
         {
-            safe_put_pixel(windows, i, j, color);
+            if (i*i + j*j <= radius*radius)
+            {
+                safe_put_pixel(windows, cx + i, cy + j, color);
+            }
         }
     }
 }

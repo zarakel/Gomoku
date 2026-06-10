@@ -120,10 +120,10 @@ void gameLoop(void *param)
 
     if (windows->changed)
     {
+        resetScreen(windows, gameData->board);
         if (windows->resized)
         {
             windows->resized = false;
-            resetScreen(windows, gameData->board);
         }
 
         // Gestion du tour IA
