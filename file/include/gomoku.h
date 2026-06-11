@@ -35,6 +35,7 @@
 
 // --- PROJECT LIBS ---
 #include "../../lib/MLX42/include/MLX42/MLX42.h"
+#include "../../lib/mongoose/mongoose.h"
 
 // --- CONSTANTES TT ---
 #define TT_SIZE (2 << 20) // ~2 Millions d'entrées
@@ -177,6 +178,7 @@ typedef struct game {
 typedef struct both {
     screen  *windows;
     game    *gameData;
+    struct mg_mgr *mgr;
 } both;
 
 typedef struct {
@@ -292,5 +294,10 @@ int     find_best_capture_move(game *g, int player);
 void    update_crisis_state(game *g, int ia_player);
 int     find_best_defense_with_threat_space(game *g, int ia_player);
 bool    is_winning_threat(game *g, int idx, int opponent);
+
+// Mongoose / Websocket
+void    init_websocket(both *args);
+void    cleanup_websocket(both *args);
+void    broadcast_board_state_external(struct mg_mgr *mgr, game *gameData, screen *windows);
 
 #endif

@@ -13,7 +13,7 @@ CC          := cc
 # Flags demandés (-Ofast -g -DDEBUG=1). 
 # J'ajoute -MMD -MP pour la gestion automatique des dépendances (.h)
 CFLAGS      := -Ofast -g -DDEBUG=1 -MMD -MP
-CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include
+CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include -I$(LIB_DIR)/mongoose
 
 # Pour réactiver les warnings stricts plus tard, décommente cette ligne :
 # CFLAGS    += -Wextra -Wall -Werror
@@ -21,7 +21,7 @@ CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include
 # --- Libraries ---
 # Détection basique pour Linux vs Mac (Optional, based on your previous config)
 LGLFW_PATH  := /usr/lib/x86_64-linux-gnu
-LIBS        := $(MLX_DIR)/build/libmlx42.a -ldl -lglfw -pthread -lm -L$(LGLFW_PATH)
+LIBS        := $(MLX_DIR)/build/libmlx42.a -ldl -lglfw -pthread -lm -L$(LGLFW_PATH) -lcjson
 
 # --- Sources & Objects ---
 # Trouve tous les .c dans src/file (exclut cli_test.c qui a son propre main)
