@@ -65,25 +65,23 @@ void broadcast_board_state_external(struct mg_mgr *mgr, game *gameData, screen *
 static void handle_client_message(struct mg_connection *c, const char *msg, both *args)
 {
     cJSON *json = cJSON_Parse(msg);
-    if (!json) return;
+    if (!json) {
+        printf("Backend Error: Failed to parse JSON: %s\n", msg);
+        return;
+    }
     
     cJSON *action = cJSON_GetObjectItem(json, "action");
     if (!action || action->type != cJSON_String)
     {
+        printf("Backend Error: No valid action in message\n");
         cJSON_Delete(json);
         return;
     }
     
-    // Handle Godot's "player_move"
+    printf("Backend: Received action '%s'\n", action->valuestring);
+    
     if (strcmp(action->valuestring, "player_move") == 0 || strcmp(action->valuestring, "play") == 0)
     {
-        // 1. Sync board from frontend
-        cJSON *board_2d = cJSON_GetObjectItem(json, "board");
-        if (board_2d) {
-            sync_board_from_godot(args->gameData, board_2d);
-        }
-
-        // 2. Handle the move logic (captures, victory, etc.)
         cJSON *last_move = cJSON_GetObjectItem(json, "last_move");
         if (last_move)
         {
@@ -95,31 +93,80 @@ static void handle_client_message(struct mg_connection *c, const char *msg, both
                 int z = z_obj->valueint;
                 int idx = GET_INDEX(x, z);
 
-                // Check for captures resulting from this move
-                int capture_indices[10];
-                int caps = apply_captures_for_ai(args->gameData, x, z, args->gameData->turn, capture_indices);
-                
-                // If the backend has capture logic, it updates the board here
-                // MLX Sync
-                drawSquare(args->windows, x, z, args->gameData->board[idx]);
-                for (int k = 0; k < caps; k++)
-                    drawSquare(args->windows, GET_X(capture_indices[k]), GET_Y(capture_indices[k]), EMPTY);
+                printf("Backend: Attempting move P%d at (%d, %d), current board val: %d\n", 
+                       args->gameData->turn, x, z, args->gameData->board[idx]);
+
+                if (!args->gameData->game_over && IS_VALID(x, z) && args->gameData->board[idx] == EMPTY)
+                {
+                    if (is_double_three(args->gameData, idx, args->gameData->turn)) {
+                        int capture_indices[10];
+                        int caps = apply_captures_for_ai(args->gameData, x, z, args->gameData->turn, capture_indices);
+                        int opponent = (args->gameData->turn == P1) ? P2 : P1;
+                        for(int k=0; k<caps; k++) args->gameData->board[capture_indices[k]] = opponent;
+
+                        if (caps == 0) {
+                            printf("Backend: Move REJECTED (Double-Three)\n");
+                            cJSON_Delete(json);
+                            return;
+                        }
+                    }
+
+                    MoveUndo undo;
+                    apply_move(args->gameData, idx, args->gameData->turn, &undo);
+                    printf("Backend: Move SUCCESS. Captures this turn: %d\n", undo.captured_count);
+                    
+                    drawSquare(args->windows, x, z, args->gameData->board[idx]);
+                    for (int k = 0; k < undo.captured_count; k++) {
+                        int cap_idx = undo.captured_indices[k];
+                        drawSquare(args->windows, GET_X(cap_idx), GET_Y(cap_idx), EMPTY);
+                    }
+
+                    checkVictoryCondition(args->gameData);
+                    if (!args->gameData->game_over)
+                        args->gameData->turn = (args->gameData->turn == P1) ? P2 : P1;
+                }
+                else {
+                    printf("Backend: Move IGNORED (Occupied=%d, GameOver=%d)\n", 
+                           args->gameData->board[idx] != EMPTY, args->gameData->game_over);
+                }
+            }
+            else {
+                printf("Backend Error: 'last_move' missing x or z\n");
+            }
+        }
+        else {
+            cJSON *index_obj = cJSON_GetObjectItem(json, "index");
+            if (index_obj) {
+                int idx = index_obj->valueint;
+                int x = GET_X(idx);
+                int z = GET_Y(idx);
+                printf("Backend: Handling 'index' move %d -> (%d, %d)\n", idx, x, z);
+                // Implementation same as x,z logic above... but x,z is preferred
+            } else {
+                printf("Backend Error: No 'last_move' or 'index' found in play action\n");
             }
         }
 
-        // 3. Victory check & Turn swap
-        checkVictoryCondition(args->gameData);
-        if (!args->gameData->game_over)
-            args->gameData->turn = (args->gameData->turn == P1) ? P2 : P1;
-        
         args->windows->changed = true;
-        
-        // 4. Respond with updated state
         broadcast_board_state(args->mgr, args->gameData, args->windows);
     }
     else if (strcmp(action->valuestring, "reset") == 0)
     {
+        printf("Backend: Action RESET\n");
         resetGame(args->gameData, args->windows);
+        broadcast_board_state(args->mgr, args->gameData, args->windows);
+    }
+    else if (strcmp(action->valuestring, "hint") == 0)
+    {
+        printf("Backend: Action HINT\n");
+        int hint = computeHintMove(args->gameData, args->gameData->turn);
+        args->gameData->hint_idx = hint;
+        broadcast_board_state(args->mgr, args->gameData, args->windows);
+    }
+    else if (strcmp(action->valuestring, "toggle_ia") == 0)
+    {
+        args->gameData->iaTurn = (args->gameData->iaTurn == 0) ? P2 : 0;
+        printf("Backend: Action TOGGLE_IA -> %d\n", args->gameData->iaTurn);
         broadcast_board_state(args->mgr, args->gameData, args->windows);
     }
     
