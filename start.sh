@@ -1,6 +1,3 @@
-#!/bin/bash
-cd /home/j/Gomoku
-
 # Start C backend in background
 ./gomoku &
 GOMOKU_PID=$!
