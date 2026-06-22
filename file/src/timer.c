@@ -10,8 +10,6 @@ void launchTimer(timer *t)
     }
 }
 
-/* Dead code removed: stopTimer */
-
 void resetTimer(timer *t)
 {
     if (!t) return;

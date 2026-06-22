@@ -134,5 +134,3 @@ int find_best_capture_move(game *g, int player) {
     
     return best_move;
 }
-
-/* Dead code removed: compute_capture_danger */

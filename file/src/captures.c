@@ -60,8 +60,6 @@ int get_captures_indices(game *gameData, int lx, int ly, int removed_indices[10]
     return count;
 }
 
-/* Dead code removed: checkPieceCapture (replaced by apply_captures_for_ai) */
-
 /**
  * Compte les paires vulnerables apres avoir simule un coup.
  * 

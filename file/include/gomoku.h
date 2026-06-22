@@ -273,8 +273,6 @@ int     generate_moves(game *g, MoveCandidate *moves, int player, int depth, int
 // ai_search.c
 int     negamax(game *g, int depth, int alpha, int beta, int player, clock_t start_time, bool null_allowed);
 
-// ai_threats.c (dead code removed)
-
 // ai_tactics.c (VCF)
 bool    has_vcf_win(game *g, int attacker, int depth, int max_depth, clock_t start_time);
 int     find_winning_vcf(game *g, int attacker);
