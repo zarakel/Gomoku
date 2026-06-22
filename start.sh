@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/hall/Documents/Gomoku
+cd /home/j/Gomoku
 
 # Start C backend in background
 ./gomoku &
