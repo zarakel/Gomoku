@@ -38,11 +38,11 @@ Ce projet a permis de concevoir un moteur d'IA hautement optimisé et une archit
 ## Cheat Sheet d'Utilisation
 
 ### Compilation
-Le projet utilise un `Makefile` pour compiler le backend C, télécharger et compiler MLX42, et lier Mongoose/cJSON.
+Le projet utilise un `Makefile` pour compiler le backend C, télécharger et compiler MLX42.
 
 | Commande | Action |
 | :--- | :--- |
-| `make` | Télécharge les dépendances, compile MLX42, Mongoose et produit l'exécutable `gomoku`. |
+| `make` | Télécharge les dépendances, compile MLX42 et produit l'exécutable `gomoku`. |
 | `make clean` | Supprime les fichiers objets intermédiaires (`.o`, `.d`). |
 | `make fclean` | Nettoie tout (fichiers objets, exécutable et bibliothèques compilées). |
 | `make re` | Recompile entièrement le projet depuis zéro. |
