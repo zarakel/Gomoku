@@ -124,9 +124,6 @@ void gameLoop(void *param)
     screen      *windows = args->windows;
     game        *gameData = args->gameData;
 
-    // Process websocket events (non-blocking)
-    if (args->mgr)
-        mg_mgr_poll(args->mgr, 0);
 
     if (windows->changed)
     {
@@ -146,9 +143,6 @@ void gameLoop(void *param)
             gameData->turn = (gameData->turn == P1) ? P2 : P1;
             windows->changed = true; // Forcer le redraw après coup IA
 
-            // ✅ Broadcast IA move to frontend
-            if (args->mgr)
-                broadcast_board_state_external(args->mgr, gameData, windows);
         }
         else
         {
@@ -172,16 +166,12 @@ void launchGame(game *gameData, screen *windows)
     both args;
     args.windows = windows;
     args.gameData = gameData;
-    args.mgr = NULL;
-
-    init_websocket(&args);
 
     // Init MLX
     windows->mlx = mlx_init((int32_t)windows->width, (int32_t)windows->height, "Gomoku IA", true);
     if (!windows->mlx)
     {
         perror("mlx_init failed");
-        cleanup_websocket(&args);
         exit(EXIT_FAILURE);
     }
 
@@ -189,7 +179,6 @@ void launchGame(game *gameData, screen *windows)
     if (mlx_image_to_window(windows->mlx, windows->img, 0, 0) == -1)
     {
         mlx_close_window(windows->mlx);
-        cleanup_websocket(&args);
         puts(mlx_strerror(mlx_errno));
         exit(EXIT_FAILURE);
     }
@@ -205,7 +194,6 @@ void launchGame(game *gameData, screen *windows)
 
     mlx_loop(windows->mlx);
 
-    cleanup_websocket(&args);
     mlx_terminate(windows->mlx);
 }
 

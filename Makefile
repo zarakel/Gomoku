@@ -6,7 +6,6 @@ INC_DIR     := file/include
 OBJ_DIR     := obj
 LIB_DIR     := lib
 MLX_DIR     := $(LIB_DIR)/MLX42
-MONGOOSE_DIR := $(LIB_DIR)/mongoose
 
 # --- Compiler & Flags ---
 CC          := cc
@@ -18,7 +17,7 @@ CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include -I/usr/include/cjson
 
 # --- Libraries ---
 LGLFW_PATH  := /usr/lib/x86_64-linux-gnu
-LIBS        := $(MLX_DIR)/build/libmlx42.a $(MONGOOSE_DIR)/mongoose.o -ldl -lglfw -pthread -lm -lcurl -lcjson -L$(LGLFW_PATH)
+LIBS        := $(MLX_DIR)/build/libmlx42.a -ldl -lglfw -pthread -lm -lcurl -L$(LGLFW_PATH)
 
 # --- Sources & Objects ---
 SRCS        := $(shell find $(SRC_DIR) -iname "*.c")
@@ -26,7 +25,7 @@ OBJS        := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 
 # --- Rules ---
 
-all: libmlx mongoose $(NAME)
+all: libmlx $(NAME)
 
 # Linkage final
 $(NAME): $(OBJS)
@@ -45,14 +44,6 @@ libmlx:
 		git clone https://github.com/codam-coding-college/MLX42.git $(MLX_DIR); \
 	fi
 	@cmake $(MLX_DIR) -B $(MLX_DIR)/build && make -C $(MLX_DIR)/build -j4
-
-# Gestion de Mongoose
-mongoose:
-	@if [ ! -d "$(MONGOOSE_DIR)" ]; then \
-		git clone https://github.com/cesanta/mongoose.git $(MONGOOSE_DIR); \
-	fi
-	@cd $(MONGOOSE_DIR) && $(CC) -c mongoose.c -I. -o mongoose.o
-	@printf "✅ Mongoose compiled\n"
 
 # Docker rule
 docker: all
@@ -83,4 +74,4 @@ brew:
 # Inclusion des dépendances générées par -MMD
 -include $(OBJS:.o=.d)
 
-.PHONY: all clean fclean re libmlx mongoose git brew docker
+.PHONY: all clean fclean re libmlx git brew docker
