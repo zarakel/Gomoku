@@ -10,10 +10,7 @@ MLX_DIR     := $(LIB_DIR)/MLX42
 # --- Compiler & Flags ---
 CC          := cc
 CFLAGS      := -Ofast -g -DDEBUG=1 -MMD -MP
-CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include -I/usr/include/cjson
-
-# Pour réactiver les warnings stricts plus tard, décommente cette ligne :
-# CFLAGS    += -Wextra -Wall -Werror
+CFLAGS      += -I$(INC_DIR) -I$(MLX_DIR)/include
 
 # --- Libraries ---
 LGLFW_PATH  := /usr/lib/x86_64-linux-gnu
