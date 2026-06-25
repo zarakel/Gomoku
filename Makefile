@@ -54,7 +54,7 @@ clean:
 
 fclean: clean
 	@rm -f $(NAME)
-	@rm -rf $(MLX_DIR)/build $(MONGOOSE_DIR)
+	@rm -rf $(MLX_DIR) $(MONGOOSE_DIR) lib
 	@printf "🗑️  Removed executable and libs.\n"
 
 re: fclean all

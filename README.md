@@ -1,62 +1,62 @@
-# Projet Gomoku AI
+# Gomoku AI Project
 
-Bienvenue dans le projet **Gomoku AI**, un jeu de Gomoku (Ninuki-Renju) doté d'un moteur d'Intelligence Artificielle de pointe écrit en C, accompagné de plusieurs interfaces : une application de bureau native en C via la bibliothèque graphique **MLX42**.
+Welcome to the **Gomoku AI** project, a Gomoku (Ninuki-Renju) game powered by a state-of-the-art Artificial Intelligence engine written in C, accompanied by a native C desktop application built using the **MLX42** graphics library.
 
-Le moteur de jeu gère les règles spécifiques du Gomoku : alignement de 5 pierres, captures de paires, règle du double-trois (double-three) et détection de fin de partie par captures.
+The game engine supports the specific rules of Gomoku: 5-in-a-row alignment, pair captures, the double-three rule, and win condition detection via captures.
 
-## Architecture Globale
+## General Architecture
 
-Le projet repose sur une architecture découplée :
+The project is built on a decoupled architecture:
 
-*   **Moteur C (Backend)** : Contient l'algorithme d'IA, la logique du jeu (règles et captures), le rendu de la fenêtre native en MLX42.
+*   **C Engine (Backend)**: Contains the AI algorithm, the game logic (rules and captures), and the rendering of the native window using MLX42.
 
 
-## Techniques Acquises & Utilisées
+## Technologies & Techniques Used
 
-Ce projet a permis de concevoir un moteur d'IA hautement optimisé et une architecture réseau hybride en C. Voici les techniques phares implémentées :
+This project involved designing a highly optimized AI engine and a hybrid network architecture in C. Here are the main techniques implemented:
 
-### 1. Algorithmes de Recherche IA (Minimax / Negamax)
-*   **Negamax avec Élagage Alpha-Beta (Alpha-Beta Pruning)** : Réduction drastique de l'espace de recherche en ignorant les branches de jeu sous-optimales.
-*   **Approfondissement Itératif (Iterative Deepening)** : Recherche progressive de la profondeur (profondeurs 2, 4, 6, etc.) pour garantir d'avoir toujours le meilleur coup calculé dans le temps imparti (limite stricte à ~500ms). Comprend une parité sur les profondeurs pour éviter les oscillations d'évaluation.
-*   **Principal Variation Search (PVS) & Fenêtre d'Aspiration (Aspiration Window)** : Optimisation des bornes d'Alpha-Beta en limitant les recherches aux variations principales et en effectuant des recherches à fenêtre nulle pour valider les coupes plus rapidement.
-*   **Tactical Solver VCF (Victory by Continuous Fours)** : Résolveur tactique dédié qui recherche des séquences de coups forcés (menaces directes d'Open-4) pour tuer ou défendre instantanément (profondeur max de 30 coups/plies).
-*   **Gestion de Crise (Crisis Mode)** : Analyse instantanée des menaces adverses (alignements imminents ou menaces de capture) afin de concentrer la recherche sur l'espace défensif pertinent.
+### 1. AI Search Algorithms (Minimax / Negamax)
+*   **Negamax with Alpha-Beta Pruning**: Drastically reduces the search space by ignoring suboptimal game branches.
+*   **Iterative Deepening**: Progressively searches deeper (depths 2, 4, 6, etc.) to guarantee that the best move is always computed within the allocated time limit (strictly capped at ~500ms). Includes depth parity checks to prevent evaluation oscillations.
+*   **Principal Variation Search (PVS) & Aspiration Window**: Optimizes Alpha-Beta bounds by restricting searches to principal variations and performing null-window searches to trigger beta cuts faster.
+*   **Victory by Continuous Fours (VCF) Tactical Solver**: A dedicated tactical solver that searches for sequences of forced moves (direct Open-4 threats) to win or defend instantly (up to a maximum depth of 30 plies).
+*   **Crisis Mode**: Instant analysis of opponent threats (imminent alignments or capture threats) to concentrate the search space on the relevant defensive moves.
 
-### 2. Optimisations de Performance & Représentation
-*   **Table de Transposition (Zobrist Hashing)** : Cache des états de plateau (~2 millions d'entrées) indexé par une clé de hachage Zobrist mise à jour de façon incrémentale. Permet d'éviter de réévaluer des positions déjà visitées (transpositions).
-*   **Candidate Set Incrémental (cand_list)** : Maintien incrémental en $O(25)$ par coup/undo de la liste des cases candidates (les cases libres ayant des voisins dans un rayon de 2 cases), au lieu de rescanner tout le plateau de 19x19 ($O(361)$) à chaque étape. Cette optimisation fait gagner environ **+2 plies** de profondeur de recherche.
-*   **Killer Moves & History Heuristic** : Ordonnancement dynamique des coups basé sur les heuristiques historiques et les coups perturbateurs ("killer moves") pour provoquer des coupes Alpha-Beta le plus tôt possible.
-*   **Évaluation Heuristique Statique Fine** : Évaluation du plateau prenant en compte la centralité des pions, le nombre de captures en cours, et des bonus de structures (Open-Four, Closed-Four, Open-Three, etc.).
+### 2. Performance Optimizations & Board Representation
+*   **Transposition Table (Zobrist Hashing)**: A cache of board states (~2 million entries) indexed by a Zobrist hash key updated incrementally. Prevents re-evaluating already visited positions (transpositions).
+*   **Incremental Candidate Set (cand_list)**: Incremental maintenance in $O(25)$ per move/undo of candidate squares (empty squares with neighbors within a 2-square radius), instead of rescanning the entire 19x19 board ($O(361)$) at each step. This optimization increases search depth by approximately **+2 plies**.
+*   **Killer Moves & History Heuristic**: Dynamic move ordering based on historical heuristics and killer moves to trigger Alpha-Beta cutoffs as early as possible.
+*   **Fine-grained Static Heuristic Evaluation**: Evaluates the board considering piece centrality, active captures, and structural bonuses (Open-Four, Closed-Four, Open-Three, etc.).
 
-## Règles Spécifiques de Jeu (Standard 42)
+## Specific Game Rules (Standard 42)
 
-*   **Plateau** : Grille de 19x19 intersections.
-*   **Victoire par Alignement** : Aligner 5 pierres horizontalement, verticalement ou diagonalement.
-*   **Victoire par Capture** : Capturer 5 paires adverses (10 pierres au total). Une capture a lieu lorsqu'un joueur encadre exactement une paire de pierres adverses adjacentes (ex : `X O O X`).
-*   **Règle du Double-Trois (Double-Three)** : Il est interdit de poser une pierre créant simultanément deux alignements de trois pierres ouverts aux deux extrémités (double alignement de 3 libre), sauf si le coup génère une capture qui détruit cette configuration.
+*   **Board**: 19x19 grid of intersections.
+*   **Victory by Alignment**: Align 5 stones horizontally, vertically, or diagonally.
+*   **Victory by Capture**: Capture 5 opponent pairs (10 stones in total). A capture occurs when a player brackets exactly one adjacent pair of opponent stones (e.g., `X O O X`).
+*   **Double-Three Rule**: It is forbidden to play a stone that simultaneously creates two open-ended three-in-a-row alignments (free double three), unless the move generates a capture that breaks this configuration.
 
-## Cheat Sheet d'Utilisation
+## How to Use (Cheat Sheet)
 
 ### Compilation
-Le projet utilise un `Makefile` pour compiler le backend C, télécharger et compiler MLX42.
+The project uses a `Makefile` to compile the C backend and download & compile MLX42.
 
-| Commande | Action |
+| Command | Action |
 | :--- | :--- |
-| `make` | Télécharge les dépendances, compile MLX42 et produit l'exécutable `gomoku`. |
-| `make clean` | Supprime les fichiers objets intermédiaires (`.o`, `.d`). |
-| `make fclean` | Nettoie tout (fichiers objets, exécutable et bibliothèques compilées). |
-| `make re` | Recompile entièrement le projet depuis zéro. |
-| `make docker` | Compile localement puis lance le conteneur Docker avec affichage X11. |
+| `make` | Downloads dependencies, compiles MLX42, and produces the `gomoku` executable. |
+| `make clean` | Removes intermediate object files (`.o`, `.d`). |
+| `make fclean` | Cleans everything (object files, executable, and compiled libraries). |
+| `make re` | Entirely rebuilds the project from scratch. |
+| `make docker` | Builds locally and runs the Docker container with X11 display. |
 
-### Lancement Local Rapide
+### Quick Local Start
 
-*   **Interface Graphique Native** : S'ouvre automatiquement sur votre bureau à l'exécution de `./gomoku`.
+*   **Native Graphical Interface**: Opens automatically on your desktop when executing `./gomoku`.
 
-## Commandes de Jeu (Raccourcis)
+## Game Controls (Shortcuts)
 
-### Sur l'interface Desktop Native (MLX42)
-*   `CLIC GAUCHE` : Placer une pierre sur une case vide du plateau.
-*   `CLIC GAUCHE` (sur le bouton **RESTART** en haut à droite) : Réinitialise la partie.
-*   `ESPACE` : Active ou désactive le mode IA (l'IA jouera le rôle du Joueur 2 / Blancs).
-*   `H` : Affiche un indice (**Hint**) en surbrillance jaune sur le plateau indiquant le meilleur coup calculé par l'IA à cet instant.
-*   `ESC` : Ferme l'application.
+### Native Desktop Interface (MLX42)
+*   `LEFT CLICK`: Place a stone on an empty board intersection.
+*   `LEFT CLICK` (on the **RESTART** button at the top-right): Resets the game.
+*   `SPACE`: Enables or disables AI mode (the AI will play as Player 2 / White).
+*   `H`: Displays a hint highlighted in yellow on the board, showing the best move computed by the AI at that moment.
+*   `ESC`: Closes the application.
